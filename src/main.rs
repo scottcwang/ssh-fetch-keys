@@ -137,6 +137,19 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
     }
 }
 
+fn get_cached_response(cache_path: &Path, cache_stale: u64) -> Result<(String, bool)> {
+    info!("Looking for a cached response at {:?}", cache_path);
+
+    let cached_result =
+        ensure_safe_permissions_and_read(cache_path, Some(users::get_effective_uid()));
+    let is_stale = time::SystemTime::now()
+        .duration_since(fs::metadata(cache_path)?.modified()?)?
+        .as_secs()
+        <= cache_stale;
+
+    cached_result.map(|cached_string| (cached_string, is_stale))
+}
+
 // Parses a line of the user's key definitions file
 // If there exists a cached response and it is fresher than cache_stale seconds, print it, return Ok(Some(cached response)), and omit making the request
 // If there exists a cached response but it is staler than cache_stale seconds, dump the cached response into cached_output, and proceed to making the request
@@ -178,37 +191,20 @@ fn process_user_def_line(
     let cache_directory_path = cache_directory.join(cache_filename);
     let cache_path = cache_directory_path.to_str().unwrap();
 
-    let cached_result =
-        ensure_safe_permissions_and_read(Path::new(cache_path), Some(users::get_effective_uid()));
-
-    if let Ok(cached_string) = cached_result {
-        // If there exists a cached response ...
-        if time::SystemTime::now()
-            .duration_since(fs::metadata(cache_path)?.modified()?)?
-            .as_secs()
-            <= cache_stale
-        {
-            // ... and it is fresher than cache_stale seconds, print it, return Ok(Some(cached response)), and omit making the request
-            info!(
-                "Found recent cached response at {}. Omitting request",
-                cache_path
-            );
+    match get_cached_response(Path::new(cache_path), cache_stale) {
+        Ok((cached_string, true)) => {
+            info!("Found fresh cached response. Omitting request");
             print!("{}", &cached_string);
             return Ok(Some(cached_string));
-        } else {
-            // ... but it is staler than cache_stale seconds, dump the cached response into cached_output, and proceed to making the request
-            info!(
-                "Cache at {} is stale. Proceeding to make request",
-                cache_path
-            );
+        }
+        Ok((cached_string, false)) => {
+            info!("Cache is stale. Proceeding to make request");
             cached_output.push(cached_string);
         }
-    } else {
-        info!(
-            "Didn't find a cache at {}. Proceeding to make request",
-            cache_path
-        );
-    };
+        Err(e) => {
+            info!("{:?}", e.context("Didn't find a usable cache. Proceeding to make request"));
+        }
+    }
 
     // Obtain URL template
     let source = line_tokens.get(0).unwrap();
