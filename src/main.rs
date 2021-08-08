@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Context, Error, Result};
 use crc::{Crc, CRC_32_ISO_HDLC};
 use curl::easy::Easy;
 use env_logger::Builder;
@@ -34,8 +34,7 @@ fn switch_user(arg_user_name: Option<&str>) -> Result<users::switch::SwitchUserG
 // If uid_option is Some, ensures the path is owned by, and can be written only by, that user,
 // then reads the file at that path
 fn ensure_safe_permissions_and_read(path: &Path, uid_option: Option<u32>) -> Result<String> {
-    if uid_option.is_some() {
-        let uid = uid_option.unwrap();
+    if let Some(uid) = uid_option {
         let sources_defs_path_metadata =
             fs::metadata(path).context(format!("Couldn't stat {:?}", path))?;
         ensure!(
@@ -59,11 +58,10 @@ fn ensure_safe_permissions_and_read(path: &Path, uid_option: Option<u32>) -> Res
 
 // Parses the source definitions file from the given filename, or /etc/ssh/fetch_keys.conf if None,
 // into a HashMap of sources to URL templates
-fn get_source_defs(override_file_name: Option<&str>) -> Result<HashMap<String, String>> {
-    let (sources_defs_path, sources_defs_uid_option) = if override_file_name.is_some() {
-        (override_file_name.unwrap(), None)
-    } else {
-        ("/etc/ssh/fetch_keys.conf", Some(0))
+fn get_source_defs(override_file_name_option: Option<&str>) -> Result<HashMap<String, String>> {
+    let (sources_defs_path, sources_defs_uid_option) = match override_file_name_option {
+        Some(override_file_name) => (override_file_name, None),
+        None => ("/etc/ssh/fetch_keys.conf", Some(0)),
     };
     info!("Looking for source definitions at {:?}", sources_defs_path);
     let sources_defs_string =
@@ -72,19 +70,19 @@ fn get_source_defs(override_file_name: Option<&str>) -> Result<HashMap<String, S
     let mut sources_defs_map = HashMap::new();
     for line in sources_defs_string.lines() {
         let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
-        if line_tokens.len() < 2 || line_tokens.get(0).unwrap().chars().nth(0).unwrap_or('#') == '#'
+        if line_tokens.len() < 2 || line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#'
         {
             continue;
         }
         sources_defs_map.insert(
             line_tokens.get(0).unwrap().to_string(),
-            line_tokens.get(1).unwrap().to_string()
+            line_tokens.get(1).unwrap().to_string(),
         );
     }
 
     ensure!(
         !sources_defs_map.is_empty(),
-        format!("Read sources definitions file, but no sources were defined in it")
+        "Read sources definitions file, but no sources were defined in it"
     );
 
     Ok(sources_defs_map)
@@ -100,14 +98,13 @@ fn get_current_euid_home_dir() -> Result<PathBuf> {
 
 // Parses the user's key definitions file from the given filename, or ~/.ssh/fetch_keys if None,
 // into a Vec of lines
-fn get_user_defs(override_file_name: Option<&str>) -> Result<Vec<String>> {
-    let (user_defs_pathbuf, user_defs_uid_option) = if override_file_name.is_some() {
-        (PathBuf::from(override_file_name.unwrap()), None)
-    } else {
-        (
+fn get_user_defs(override_file_name_option: Option<&str>) -> Result<Vec<String>> {
+    let (user_defs_pathbuf, user_defs_uid_option) = match override_file_name_option {
+        Some(override_file_name) => (PathBuf::from(override_file_name), None),
+        None => (
             get_current_euid_home_dir()?.join(".ssh/fetch_keys"),
             Some(users::get_effective_uid()),
-        )
+        ),
     };
     info!("Looking for user definitions at {:?}", user_defs_pathbuf);
     ensure_safe_permissions_and_read(&user_defs_pathbuf, user_defs_uid_option)
@@ -133,11 +130,11 @@ fn get_cache_directory(override_dir_name: Option<&str>) -> Result<PathBuf> {
 }
 
 // Returns true if the given key, if Some, is present in the given response string
-fn is_key_in_response_str(key_to_find: Option<&str>, response_str: String) -> bool {
-    key_to_find.is_some()
-        && response_str
-            .lines()
-            .any(|line| line.ends_with(key_to_find.unwrap()))
+fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String) -> bool {
+    match key_to_find_option {
+        Some(key_to_find) => response_str.lines().any(|line| line.ends_with(key_to_find)),
+        None => false,
+    }
 }
 
 // Parses a line of the user's key definitions file
@@ -157,7 +154,7 @@ fn process_user_def_line(
     let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
 
     // Skip comment lines and blank lines
-    if line_tokens.len() == 0 || line_tokens.get(0).unwrap().chars().nth(0).unwrap_or('#') == '#' {
+    if line_tokens.is_empty() || line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#' {
         return Ok(None);
     }
 
@@ -184,7 +181,7 @@ fn process_user_def_line(
     let cached_result =
         ensure_safe_permissions_and_read(Path::new(cache_path), Some(users::get_effective_uid()));
 
-    if cached_result.is_ok() {
+    if let Ok(cached_string) = cached_result {
         // If there exists a cached response ...
         if time::SystemTime::now()
             .duration_since(fs::metadata(cache_path)?.modified()?)?
@@ -193,43 +190,35 @@ fn process_user_def_line(
         {
             // ... and it is fresher than cache_stale seconds, print it, return Ok(Some(cached response)), and omit making the request
             info!(
-                "Found recent cached response at {:?}. Omitting request",
+                "Found recent cached response at {}. Omitting request",
                 cache_path
             );
-            let cached_string = cached_result.unwrap();
             print!("{}", &cached_string);
             return Ok(Some(cached_string));
         } else {
             // ... but it is staler than cache_stale seconds, dump the cached response into cached_output, and proceed to making the request
             info!(
-                "Cache at {:?} is stale. Proceeding to make request",
+                "Cache at {} is stale. Proceeding to make request",
                 cache_path
             );
-            cached_output.push(cached_result.unwrap());
+            cached_output.push(cached_string);
         }
     } else {
         info!(
-            "{:?}",
-            cached_result
-                .context(format!(
-                    "Didn't find a cache at {:?}. Proceeding to make request",
-                    cache_path
-                ))
-                .unwrap_err()
+            "Didn't find a cache at {}. Proceeding to make request",
+            cache_path
         );
-    }
+    };
 
     // Obtain URL template
     let source = line_tokens.get(0).unwrap();
     let source_def = sources_defs_map.get(source);
-    ensure!(
-        source_def.is_some(),
-        format!("{} is not a defined source", source)
-    );
+
+    let url =
+        source_def.ok_or_else(|| Error::msg(format!("{} is not a defined source", source)))?;
 
     // Construct request URL
     info!("Found URL template for source {}", source);
-    let url = source_def.unwrap();
     let mut replacement_successful = true;
     let final_url = REGEX_URL.replace_all(url, |caps: &Captures| {
         let index: usize = caps.name("index").unwrap().as_str().parse().unwrap();
@@ -260,16 +249,17 @@ fn process_user_def_line(
         })?;
         transfer.perform()
     };
-    info!("Response code was {}", easy.response_code()?);
 
-    // If response code is not 200, then return Ok(None)
-    if transfer_result.is_err() || easy.response_code()? != 200 {
-        warn!(
-            "{:?}",
-            transfer_result
-                .context(format!("Request to {} was unsuccessful", final_url))
-                .unwrap_err()
-        );
+    if let Err(e) = transfer_result {
+        // If request failed, then return Ok(None)
+        warn!("Request was unsuccessful: {:?}", e);
+        return Ok(None);
+    }
+
+    let response_code = easy.response_code()?;
+    if response_code != 200 {
+        // If response code is not 200, then return Ok(None)
+        warn!("Response code was {}, not 200", response_code);
         return Ok(None);
     }
 
@@ -284,7 +274,6 @@ fn process_user_def_line(
     fs::write(cache_path, &response_str)
         .context(format!("Couldn't write cache at {:?}", cache_path))?;
     fs::set_permissions(cache_path, fs::Permissions::from_mode(0o644))?;
-
     Ok(Some(response_str))
 }
 
@@ -362,6 +351,7 @@ fn fetch_print_keys() -> Result<()> {
     // Obtain paths
     let source_defs = get_source_defs(matches.value_of("source-defs"))?;
     let cache_directory = get_cache_directory(matches.value_of("cache-directory"))?;
+    let user_defs = get_user_defs(matches.value_of("user-defs"))?;
 
     let key_to_find = matches.value_of("key");
     let cache_stale = matches.value_of("cache-stale").unwrap_or("60").parse()?;
@@ -372,9 +362,7 @@ fn fetch_print_keys() -> Result<()> {
     let mut some_line_output = false;
 
     // Parse each user definitions line
-    for (line_number, line) in get_user_defs(matches.value_of("user-defs"))?.into_iter()
-        .enumerate()
-    {
+    for (line_number, line) in user_defs.into_iter().enumerate() {
         let line_result = process_user_def_line(
             line,
             &source_defs,
@@ -383,13 +371,12 @@ fn fetch_print_keys() -> Result<()> {
             cache_stale,
             request_timeout,
         );
-        if line_result.is_ok() {
-            // If there was no error processing this line ...
-            let line_option = line_result.unwrap();
-            if line_option.is_some() {
-                // ... and there exists a fresh cache or the response code is 200 for this line ...
+
+        match line_result {
+            Ok(Some(line_retrieved_response)) => {
+                // If there was no error processing this line, and there exists a fresh cache or the response code is 200 for this line ...
                 some_line_output = true;
-                if is_key_in_response_str(key_to_find, line_option.unwrap()) {
+                if is_key_in_response_str(key_to_find, line_retrieved_response) {
                     // ... and the key_to_find (if Some) is found, then skip subsequent lines
                     info!(
                         "Found the provided key when processing line {}. Skipping subsequent lines",
@@ -398,14 +385,14 @@ fn fetch_print_keys() -> Result<()> {
                     break;
                 }
             }
-        } else {
-            // If there was an error processing this line, skip it
-            warn!(
-                "{:?}",
-                line_result
-                    .context(format!("Skipping line {}", line_number + 1))
-                    .unwrap_err()
-            );
+            Ok(None) => {}
+            Err(line_err) => {
+                // If there was an error processing this line, skip it
+                warn!(
+                    "{:?}",
+                    line_err.context(format!("Skipping line {}", line_number + 1))
+                );
+            }
         }
     }
     if !some_line_output {
@@ -427,9 +414,8 @@ fn fetch_print_keys() -> Result<()> {
 }
 
 fn main() {
-    let result = fetch_print_keys();
-    if result.is_err() {
-        error!("{:?}", result.context("Exiting").unwrap_err());
+    if let Err(e) = fetch_print_keys() {
+        error!("{:?}", e.context("Exiting"));
         process::exit(1);
-    }
+    };
 }
