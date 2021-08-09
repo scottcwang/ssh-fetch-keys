@@ -130,7 +130,7 @@ fn get_cache_directory(override_dir_name: Option<&str>) -> Result<PathBuf> {
 }
 
 // Construct the filename in which the cached response lives
-fn get_cache_filename(line_tokens: &Vec<String>, cache_directory: &Path) -> PathBuf {
+fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf {
     // Canonicalise user definition line by combining whitespace
     let line_join_ascii_whitespace = line_tokens.join(" ");
     let crc_line = Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line_join_ascii_whitespace.as_bytes());
