@@ -150,6 +150,37 @@ fn get_cached_response(cache_path: &Path, cache_stale: u64) -> Result<(String, b
     cached_result.map(|cached_string| (cached_string, is_stale))
 }
 
+// Construct URL, given HashMap of sources to URL templates as well as tokens
+fn construct_url(sources_defs_map: &HashMap<String, String>, line_tokens: Vec<String>) -> Result<String> {
+    let source = line_tokens.get(0).unwrap();
+    let source_def = sources_defs_map.get(source);
+
+    let url_template =
+        source_def.ok_or_else(|| Error::msg(format!("{} is not a defined source", source)))?;
+
+    lazy_static! {
+        static ref REGEX_URL: Regex = Regex::new(r"\{(?P<index>[[:digit:]]+)\}").unwrap();
+        static ref REGEX_FILENAME: Regex = Regex::new(r"[^[:alnum:]_\.\-]+").unwrap();
+    }
+
+    info!("Found URL template for source {}", source);
+    let mut replacement_successful = true;
+    let url = REGEX_URL.replace_all(url_template, |caps: &Captures| {
+        let index: usize = caps.name("index").unwrap().as_str().parse().unwrap();
+        if index < line_tokens.len() {
+            &line_tokens.get(index).unwrap()
+        } else {
+            replacement_successful = false;
+            ""
+        }
+    }).to_string();
+    ensure!(
+        replacement_successful,
+        format!("Not enough parameters for source {}", source)
+    );
+    Ok(url)
+}
+
 // Make request, timing out after request_timeout seconds
 fn request_from_url(url: String, request_timeout: u64) -> Result<String> {
     info!("Making request to {}", url);
@@ -237,31 +268,9 @@ fn process_user_def_line(
         }
     }
 
-    // Obtain URL template
-    let source = line_tokens.get(0).unwrap();
-    let source_def = sources_defs_map.get(source);
+    let url = construct_url(sources_defs_map, line_tokens).context("Couldn't construct request URL")?;
 
-    let url =
-        source_def.ok_or_else(|| Error::msg(format!("{} is not a defined source", source)))?;
-
-    // Construct request URL
-    info!("Found URL template for source {}", source);
-    let mut replacement_successful = true;
-    let final_url = REGEX_URL.replace_all(url, |caps: &Captures| {
-        let index: usize = caps.name("index").unwrap().as_str().parse().unwrap();
-        if index < line_tokens.len() {
-            &line_tokens.get(index).unwrap()
-        } else {
-            replacement_successful = false;
-            ""
-        }
-    }).to_string();
-    ensure!(
-        replacement_successful,
-        format!("Not enough parameters for source {}", source)
-    );
-
-    let response_str = request_from_url(final_url, request_timeout).context("Request was unsuccessful")?;
+    let response_str = request_from_url(url, request_timeout).context("Request was unsuccessful")?;
 
     print!("{}", response_str);
 
