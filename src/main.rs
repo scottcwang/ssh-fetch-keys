@@ -304,6 +304,67 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
     }
 }
 
+// Parse and process a Vec of user definitions lines
+fn process_user_defs(
+    source_defs: HashMap<String, String>,
+    cache_directory: PathBuf,
+    user_defs: Vec<String>,
+    key_to_find: Option<&str>,
+    cache_stale: u64,
+    request_timeout: u64,
+) -> Result<()> {
+    let mut cached_output: Vec<String> = Vec::new();
+
+    let mut some_line_output = false;
+
+    for (line_number, line) in user_defs.into_iter().enumerate() {
+        let line_result = process_user_def_line(
+            line,
+            &source_defs,
+            &cache_directory,
+            &mut cached_output,
+            cache_stale,
+            request_timeout,
+        );
+
+        match line_result {
+            Ok(Some(line_retrieved_response)) => {
+                // If there was no error processing this line, and there exists a fresh cache or the response code is 200 for this line ...
+                some_line_output = true;
+                if is_key_in_response_str(key_to_find, line_retrieved_response) {
+                    // ... and the key_to_find (if Some) is found, then skip subsequent lines
+                    info!(
+                        "Found the provided key when processing line {}. Skipping subsequent lines",
+                        line_number + 1
+                    );
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(line_err) => {
+                // If there was an error processing this line, skip it
+                warn!(
+                    "{:?}",
+                    line_err.context(format!("Skipping line {}", line_number + 1))
+                );
+            }
+        }
+    }
+    if !some_line_output {
+        // For all lines, if
+        // either there does not exist a fresh cache and the response code is not 200,
+        // or there was an error processing the line,
+        // then print all stale caches that exist
+        warn!("None of the source definitions provided a recent cached response or a successful request. Using stale caches");
+
+        for cached_output_entry in cached_output {
+            print!("{}", cached_output_entry);
+        }
+    }
+
+    Ok(())
+}
+
 fn fetch_print_keys() -> Result<()> {
     // Read command-line arguments
     let matches = clap::App::new("ssh_fetch_keys")
@@ -375,64 +436,14 @@ fn fetch_print_keys() -> Result<()> {
     // Switch user
     let guard = switch_user(matches.value_of("username"))?;
 
-    // Obtain paths
-    let source_defs = get_source_defs(matches.value_of("source-defs"))?;
-    let cache_directory = get_cache_directory(matches.value_of("cache-directory"))?;
-    let user_defs = get_user_defs(matches.value_of("user-defs"))?;
-
-    let key_to_find = matches.value_of("key");
-    let cache_stale = matches.value_of("cache-stale").unwrap_or("60").parse()?;
-    let request_timeout = matches.value_of("request-timeout").unwrap_or("5").parse()?;
-
-    let mut cached_output: Vec<String> = Vec::new();
-
-    let mut some_line_output = false;
-
-    // Parse each user definitions line
-    for (line_number, line) in user_defs.into_iter().enumerate() {
-        let line_result = process_user_def_line(
-            line,
-            &source_defs,
-            &cache_directory,
-            &mut cached_output,
-            cache_stale,
-            request_timeout,
-        );
-
-        match line_result {
-            Ok(Some(line_retrieved_response)) => {
-                // If there was no error processing this line, and there exists a fresh cache or the response code is 200 for this line ...
-                some_line_output = true;
-                if is_key_in_response_str(key_to_find, line_retrieved_response) {
-                    // ... and the key_to_find (if Some) is found, then skip subsequent lines
-                    info!(
-                        "Found the provided key when processing line {}. Skipping subsequent lines",
-                        line_number + 1
-                    );
-                    break;
-                }
-            }
-            Ok(None) => {}
-            Err(line_err) => {
-                // If there was an error processing this line, skip it
-                warn!(
-                    "{:?}",
-                    line_err.context(format!("Skipping line {}", line_number + 1))
-                );
-            }
-        }
-    }
-    if !some_line_output {
-        // For all lines, if
-        // either there does not exist a fresh cache and the response code is not 200,
-        // or there was an error processing the line,
-        // then print all stale caches that exist
-        warn!("None of the source definitions provided a recent cached response or a successful request. Using stale caches");
-
-        for cached_output_entry in cached_output {
-            print!("{}", cached_output_entry);
-        }
-    }
+    process_user_defs(
+        get_source_defs(matches.value_of("source-defs"))?,
+        get_cache_directory(matches.value_of("cache-directory"))?,
+        get_user_defs(matches.value_of("user-defs"))?,
+        matches.value_of("key"),
+        matches.value_of("cache-stale").unwrap_or("60").parse()?,
+        matches.value_of("request-timeout").unwrap_or("5").parse()?,
+    )?;
 
     // Switch user back
     drop(guard);
