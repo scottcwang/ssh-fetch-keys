@@ -233,6 +233,15 @@ fn request_from_url(url: String, request_timeout: u64) -> Result<String> {
     Ok(String::from_utf8(response)?)
 }
 
+fn write_to_cache(cache_path: PathBuf, response_str: &str) -> Result<()> {
+    info!("Saving response to cache location {:?}", cache_path);
+    fs::write(&cache_path, response_str)
+        .context(format!("Couldn't write cache at {:?}", cache_path))?;
+    fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o644))
+        .context(format!("Couldn't set permissions at {:?}", cache_path))?;
+    Ok(())
+}
+
 // Parses a line of the user's key definitions file
 // If there exists a cached response and it is fresher than cache_stale seconds, print it, return Ok(Some(cached response)), and omit making the request
 // If there exists a cached response but it is staler than cache_stale seconds, dump the cached response into cached_output, and proceed to making the request
@@ -282,10 +291,8 @@ fn process_user_def_line(
 
     print!("{}", response_str);
 
-    info!("Saving response to cache location {:?}", cache_path);
-    fs::write(&cache_path, &response_str)
-        .context(format!("Couldn't write cache at {:?}", cache_path))?;
-    fs::set_permissions(cache_path, fs::Permissions::from_mode(0o644))?;
+    write_to_cache(cache_path, &response_str).context("Couldn't write to cache")?;
+
     Ok(Some(response_str))
 }
 
