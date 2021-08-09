@@ -130,21 +130,28 @@ fn get_cache_directory(override_dir_name: Option<&str>) -> Result<PathBuf> {
 }
 
 // Construct the filename in which the cached response lives
-fn get_cache_filename(line: String, line_tokens: &Vec<String>, cache_directory: &Path) -> PathBuf {
+fn get_cache_filename(line_tokens: &Vec<String>, cache_directory: &Path) -> PathBuf {
+    // Canonicalise user definition line by combining whitespace
+    let line_join_ascii_whitespace = line_tokens.join(" ");
+    let crc_line = Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line_join_ascii_whitespace.as_bytes());
+
     lazy_static! {
         static ref REGEX_FILENAME: Regex = Regex::new(r"[^[:alnum:]_\.\-]+").unwrap();
     }
 
-    let cache_filename = format!(
-        "{:x}-{}",
-        Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line.as_bytes()),
-        line_tokens
+    // Replace all characters that aren't alphanumeric, _, ., or - with -
+    let line_join_hyphen = line_tokens
             .iter()
             .map(|token| REGEX_FILENAME
                 .replace_all(&token, |_: &Captures| { "-" })
                 .into_owned())
             .collect::<Vec<String>>()
-            .join("_")
+            .join("_");
+
+    let cache_filename = format!(
+        "{:x}-{}",
+        crc_line,
+        line_join_hyphen
     );
     cache_directory.join(cache_filename).to_owned()
 }
@@ -247,7 +254,7 @@ fn process_user_def_line(
         return Ok(None);
     }
 
-    let cache_path = get_cache_filename(line, &line_tokens, cache_directory);
+    let cache_path = get_cache_filename(&line_tokens, cache_directory);
 
     match get_cached_response(&cache_path, cache_stale) {
         Ok((cached_string, true)) => {
