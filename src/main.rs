@@ -133,7 +133,8 @@ fn get_cache_directory(override_dir_name: Option<&str>) -> Result<PathBuf> {
 fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf {
     // Canonicalise user definition line by combining whitespace
     let line_join_ascii_whitespace = line_tokens.join(" ");
-    let crc_line = Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line_join_ascii_whitespace.as_bytes());
+    let crc_line =
+        Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line_join_ascii_whitespace.as_bytes());
 
     lazy_static! {
         static ref REGEX_FILENAME: Regex = Regex::new(r"[^[:alnum:]_\.\-]+").unwrap();
@@ -141,19 +142,18 @@ fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf
 
     // Replace all characters that aren't alphanumeric, _, ., or - with -
     let line_join_hyphen = line_tokens
-            .iter()
-            .map(|token| REGEX_FILENAME
-                .replace_all(&token, |_: &Captures| { "-" })
-                .into_owned())
-            .collect::<Vec<String>>()
-            .join("_");
+        .iter()
+        .map(|token| {
+            REGEX_FILENAME
+                .replace_all(&token, |_: &Captures| "-")
+                .into_owned()
+        })
+        .collect::<Vec<String>>()
+        .join("_");
 
-    let cache_filename = format!(
-        "{:x}-{}",
-        crc_line,
-        line_join_hyphen
-    );
-    cache_directory.join(cache_filename).to_owned()
+    let cache_filename = format!("{:x}-{}", crc_line, line_join_hyphen);
+
+    cache_directory.join(cache_filename)
 }
 
 fn get_cached_response(cache_path: &Path, cache_stale: u64) -> Result<(String, bool)> {
