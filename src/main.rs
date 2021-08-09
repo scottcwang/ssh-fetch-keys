@@ -150,6 +150,34 @@ fn get_cached_response(cache_path: &Path, cache_stale: u64) -> Result<(String, b
     cached_result.map(|cached_string| (cached_string, is_stale))
 }
 
+// Make request, timing out after request_timeout seconds
+fn request_from_url(url: String, request_timeout: u64) -> Result<String> {
+    info!("Making request to {}", url);
+    let mut response = Vec::new();
+    let mut easy = Easy::new();
+    easy.url(&url)?;
+    easy.timeout(time::Duration::from_secs(request_timeout))?;
+    easy.follow_location(true)?;
+    {
+        let mut transfer = easy.transfer();
+        transfer.write_function(|data| {
+            response.extend_from_slice(data);
+            Ok(data.len())
+        })?;
+        transfer.perform()
+    }.context("Transfer failed in libcurl")?;
+
+    // If response code is not 200, return Error
+    let response_code = easy.response_code()?;
+    ensure!(
+        response_code == 200,
+        format!("Response code was {}, not 200", response_code)
+    );
+
+    info!("Request was successful");
+    Ok(String::from_utf8(response)?)
+}
+
 // Parses a line of the user's key definitions file
 // If there exists a cached response and it is fresher than cache_stale seconds, print it, return Ok(Some(cached response)), and omit making the request
 // If there exists a cached response but it is staler than cache_stale seconds, dump the cached response into cached_output, and proceed to making the request
@@ -202,7 +230,10 @@ fn process_user_def_line(
             cached_output.push(cached_string);
         }
         Err(e) => {
-            info!("{:?}", e.context("Didn't find a usable cache. Proceeding to make request"));
+            info!(
+                "{:?}",
+                e.context("Didn't find a usable cache. Proceeding to make request")
+            );
         }
     }
 
@@ -224,45 +255,13 @@ fn process_user_def_line(
             replacement_successful = false;
             ""
         }
-    });
+    }).to_string();
     ensure!(
         replacement_successful,
         format!("Not enough parameters for source {}", source)
     );
 
-    // Make request, timing out after request_timeout seconds
-    info!("Making request to {}", final_url);
-    let mut response = Vec::new();
-    let mut easy = Easy::new();
-    easy.url(&final_url)?;
-    easy.timeout(time::Duration::from_secs(request_timeout))?;
-    easy.follow_location(true)?;
-    let transfer_result = {
-        let mut transfer = easy.transfer();
-        transfer.write_function(|data| {
-            response.extend_from_slice(data);
-            Ok(data.len())
-        })?;
-        transfer.perform()
-    };
-
-    if let Err(e) = transfer_result {
-        // If request failed, then return Ok(None)
-        warn!("Request was unsuccessful: {:?}", e);
-        return Ok(None);
-    }
-
-    let response_code = easy.response_code()?;
-    if response_code != 200 {
-        // If response code is not 200, then return Ok(None)
-        warn!("Response code was {}, not 200", response_code);
-        return Ok(None);
-    }
-
-    // If request is successful, then write the response to the cache and return Ok(Some(response))
-    info!("Request was successful");
-
-    let response_str = String::from_utf8(response)?;
+    let response_str = request_from_url(final_url, request_timeout).context("Request was unsuccessful")?;
 
     print!("{}", response_str);
 
