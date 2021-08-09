@@ -129,12 +129,24 @@ fn get_cache_directory(override_dir_name: Option<&str>) -> Result<PathBuf> {
     Ok(cache_path)
 }
 
-// Returns true if the given key, if Some, is present in the given response string
-fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String) -> bool {
-    match key_to_find_option {
-        Some(key_to_find) => response_str.lines().any(|line| line.ends_with(key_to_find)),
-        None => false,
+// Construct the filename in which the cached response lives
+fn get_cache_filename(line: String, line_tokens: &Vec<String>, cache_directory: &Path) -> PathBuf {
+    lazy_static! {
+        static ref REGEX_FILENAME: Regex = Regex::new(r"[^[:alnum:]_\.\-]+").unwrap();
     }
+
+    let cache_filename = format!(
+        "{:x}-{}",
+        Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line.as_bytes()),
+        line_tokens
+            .iter()
+            .map(|token| REGEX_FILENAME
+                .replace_all(&token, |_: &Captures| { "-" })
+                .into_owned())
+            .collect::<Vec<String>>()
+            .join("_")
+    );
+    cache_directory.join(cache_filename).to_owned()
 }
 
 fn get_cached_response(cache_path: &Path, cache_stale: u64) -> Result<(String, bool)> {
@@ -230,27 +242,9 @@ fn process_user_def_line(
         return Ok(None);
     }
 
-    // Construct the filename in which the cached response lives
-    lazy_static! {
-        static ref REGEX_URL: Regex = Regex::new(r"\{(?P<index>[[:digit:]]+)\}").unwrap();
-        static ref REGEX_FILENAME: Regex = Regex::new(r"[^[:alnum:]_\.\-]+").unwrap();
-    }
+    let cache_path = get_cache_filename(line, &line_tokens, cache_directory);
 
-    let cache_filename = format!(
-        "{:x}-{}",
-        Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line.as_bytes()),
-        line_tokens
-            .iter()
-            .map(|token| REGEX_FILENAME
-                .replace_all(&token, |_: &Captures| { "-" })
-                .into_owned())
-            .collect::<Vec<String>>()
-            .join("_")
-    );
-    let cache_directory_path = cache_directory.join(cache_filename);
-    let cache_path = cache_directory_path.to_str().unwrap();
-
-    match get_cached_response(Path::new(cache_path), cache_stale) {
+    match get_cached_response(&cache_path, cache_stale) {
         Ok((cached_string, true)) => {
             info!("Found fresh cached response. Omitting request");
             print!("{}", &cached_string);
@@ -275,10 +269,18 @@ fn process_user_def_line(
     print!("{}", response_str);
 
     info!("Saving response to cache location {:?}", cache_path);
-    fs::write(cache_path, &response_str)
+    fs::write(&cache_path, &response_str)
         .context(format!("Couldn't write cache at {:?}", cache_path))?;
     fs::set_permissions(cache_path, fs::Permissions::from_mode(0o644))?;
     Ok(Some(response_str))
+}
+
+// Returns true if the given key, if Some, is present in the given response string
+fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String) -> bool {
+    match key_to_find_option {
+        Some(key_to_find) => response_str.lines().any(|line| line.ends_with(key_to_find)),
+        None => false,
+    }
 }
 
 fn fetch_print_keys() -> Result<()> {
