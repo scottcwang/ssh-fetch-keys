@@ -96,15 +96,11 @@ fn get_user_home_dir(user: &User) -> Result<PathBuf> {
     Ok(user.home_dir().to_path_buf())
 }
 
-// Parses the user's key definitions file from the given filename, or ~/.ssh/fetch_keys if None,
-// into a Vec of lines
-fn get_user_defs(override_file_name_option: Option<&str>, user: &User) -> Result<Vec<String>> {
-    let (user_defs_pathbuf, user_defs_user_option) = match override_file_name_option {
-        Some(override_file_name) => (PathBuf::from(override_file_name), None),
-        None => (get_user_home_dir(user)?.join(".ssh/fetch_keys"), Some(user)),
-    };
-    info!("Looking for user definitions at {:?}", user_defs_pathbuf);
-    ensure_safe_permissions_and_read(&user_defs_pathbuf, user_defs_user_option)
+// Parses the user's key definitions file from the given path into a Vec of lines;
+// if a user is given, checks the path is owned by and writeable only by that user
+fn get_user_defs((user_defs_path, user_option): (&Path, Option<&User>)) -> Result<Vec<String>> {
+    info!("Looking for user definitions at {:?}", user_defs_path);
+    ensure_safe_permissions_and_read(&user_defs_path, user_option)
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
@@ -452,7 +448,15 @@ fn fetch_print_keys() -> Result<()> {
                 )),
         )?,
         get_cache_directory(matches.value_of("cache-directory"), &user)?,
-        get_user_defs(matches.value_of("user-defs"), &user)?,
+        get_user_defs(
+            matches
+                .value_of("user-defs")
+                .map(|override_file_name| (Path::new(override_file_name), None))
+                .unwrap_or((
+                    &get_user_home_dir(&user)?.join(".ssh/fetch_keys"),
+                    Some(&user),
+                )),
+        )?,
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
