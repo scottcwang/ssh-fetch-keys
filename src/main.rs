@@ -61,21 +61,14 @@ fn ensure_safe_permissions_and_read(path: &Path, user_option: Option<&User>) -> 
     fs::read_to_string(path).context(format!("Could not read {:?}", path))
 }
 
-// Parses the source definitions file from the given filename, or /etc/ssh/fetch_keys.conf if None,
-// into a HashMap of sources to URL templates
-fn get_source_defs(override_file_name_option: Option<&str>) -> Result<HashMap<String, String>> {
-    let (sources_defs_path, sources_defs_user_option) = match override_file_name_option {
-        Some(override_file_name) => (override_file_name, None),
-        None => (
-            "/etc/ssh/fetch_keys.conf",
-            Some(users::get_user_by_uid(0).context("Couldn't get root user")?),
-        ),
-    };
+// Parses the source definitions file from the given path into a HashMap of sources to URL templates;
+// if a user is given, checks the path is owned by and writeable only by that user
+fn get_source_defs(
+    (sources_defs_path, sources_defs_user_option): (&Path, Option<&User>),
+) -> Result<HashMap<String, String>> {
     info!("Looking for source definitions at {:?}", sources_defs_path);
-    let sources_defs_string = ensure_safe_permissions_and_read(
-        Path::new(sources_defs_path),
-        sources_defs_user_option.as_ref(),
-    )?;
+    let sources_defs_string =
+        ensure_safe_permissions_and_read(sources_defs_path, sources_defs_user_option)?;
 
     let mut sources_defs_map = HashMap::new();
     for line in sources_defs_string.lines() {
@@ -444,7 +437,20 @@ fn fetch_print_keys() -> Result<()> {
 
     process_user_defs(
         &user,
-        get_source_defs(matches.value_of("source-defs"))?,
+        get_source_defs(
+            matches
+                .value_of("source-defs")
+                .map(|override_file_name| (Path::new(override_file_name), None))
+                .unwrap_or((
+                    Path::new("/etc/ssh/fetch_keys.conf"),
+                    Some(
+                        users_table
+                            .get_user_by_uid(0)
+                            .context("Couldn't get root user")?
+                            .as_ref(),
+                    ),
+                )),
+        )?,
         get_cache_directory(matches.value_of("cache-directory"), &user)?,
         get_user_defs(matches.value_of("user-defs"), &user)?,
         matches.value_of("key"),
