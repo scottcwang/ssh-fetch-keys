@@ -104,12 +104,8 @@ fn get_user_defs((user_defs_path, user_option): (&Path, Option<&User>)) -> Resul
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
-// Obtains the user's key cache directory path from the given filename, or ~/.ssh/fetch_keys.d if None,
-// creating it if it doesn't exist
-fn get_cache_directory(override_dir_name: Option<&str>, user: &User) -> Result<PathBuf> {
-    let cache_path = override_dir_name
-        .map(PathBuf::from)
-        .unwrap_or(get_user_home_dir(user)?.join(".ssh/fetch_keys.d"));
+// Creates the key cache directory at the given path if it doesn't exist
+fn get_cache_directory(cache_path: &Path) -> Result<&Path> {
     if cache_path.exists() {
         info!("Found cache directory at {:?}", cache_path);
     } else {
@@ -301,7 +297,7 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
 fn process_user_defs(
     user: &User,
     source_defs: HashMap<String, String>,
-    cache_directory: PathBuf,
+    cache_directory: &Path,
     user_defs: Vec<String>,
     key_to_find: Option<&str>,
     cache_stale: u64,
@@ -447,7 +443,12 @@ fn fetch_print_keys() -> Result<()> {
                     ),
                 )),
         )?,
-        get_cache_directory(matches.value_of("cache-directory"), &user)?,
+        get_cache_directory(
+            matches
+                .value_of("cache-directory")
+                .map(Path::new)
+                .unwrap_or(&get_user_home_dir(&user)?.join(".ssh/fetch_keys.d")),
+        )?,
         get_user_defs(
             matches
                 .value_of("user-defs")
