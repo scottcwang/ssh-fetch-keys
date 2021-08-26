@@ -16,13 +16,24 @@ use std::str;
 use std::time;
 use users::os::unix::UserExt;
 use users::switch;
+use users::{Users, UsersCache};
 
 // Switches the effective uid to the given user, or self if None
-fn switch_user(arg_user_name: Option<&str>) -> Result<users::switch::SwitchUserGuard> {
-    let user_name = arg_user_name
-        .map(OsString::from)
-        .unwrap_or(users::get_effective_username().context("Couldn't get effective username")?);
-    let user = users::get_user_by_name(&user_name)
+fn switch_user<U>(
+    arg_user_name: Option<&str>,
+    user_table: &mut U,
+) -> Result<switch::SwitchUserGuard>
+where
+    U: Users,
+{
+    let user_name = arg_user_name.map(OsString::from).unwrap_or(
+        (user_table
+            .get_effective_username()
+            .context("Couldn't get effective username")?)
+        .to_os_string(),
+    );
+    let user = user_table
+        .get_user_by_name(&user_name)
         .context(format!("No user with username {:?}", user_name))?;
     let guard = switch::switch_user_group(user.uid(), user.primary_group_id()).context(format!(
         "Couldn't seteuid to user with username {:?}",
@@ -433,8 +444,8 @@ fn fetch_print_keys() -> Result<()> {
     });
     builder.init();
 
-    // Switch user
-    let guard = switch_user(matches.value_of("username"))?;
+    let mut users_table = UsersCache::new();
+    let guard = switch_user(matches.value_of("username"), &mut users_table)?;
 
     process_user_defs(
         get_source_defs(matches.value_of("source-defs"))?,
