@@ -16,13 +16,13 @@ use std::str;
 use std::time;
 use users::os::unix::UserExt;
 use users::switch;
-use users::{Users, UsersCache};
+use users::{User, Users, UsersCache};
 
 // Switches the effective uid to the given user, or self if None
 fn switch_user<U>(
     arg_user_name: Option<&str>,
     user_table: &mut U,
-) -> Result<switch::SwitchUserGuard>
+) -> Result<(User, switch::SwitchUserGuard)>
 where
     U: Users,
 {
@@ -39,24 +39,18 @@ where
         "Couldn't seteuid to user with username {:?}",
         user_name
     ))?;
-    Ok(guard)
+    Ok((User::clone(&user), guard))
 }
 
-// If uid_option is Some, ensures the path is owned by, and can be written only by, that user,
+// If user_option is Some, ensures the path is owned by, and can be written only by, that user,
 // then reads the file at that path
-fn ensure_safe_permissions_and_read(path: &Path, uid_option: Option<u32>) -> Result<String> {
-    if let Some(uid) = uid_option {
+fn ensure_safe_permissions_and_read(path: &Path, user_option: Option<&User>) -> Result<String> {
+    if let Some(user) = user_option {
         let sources_defs_path_metadata =
             fs::metadata(path).context(format!("Couldn't stat {:?}", path))?;
         ensure!(
-            sources_defs_path_metadata.uid() == uid,
-            format!(
-                "{:?} not owned by {:?}",
-                path,
-                users::get_user_by_uid(uid)
-                    .context(format!("Couldn't get user with uid {}", uid))?
-                    .name()
-            )
+            sources_defs_path_metadata.uid() == user.uid(),
+            format!("{:?} not owned by {:?}", path, user.name())
         );
         ensure!(
             sources_defs_path_metadata.mode() & 0o022 == 0,
@@ -70,13 +64,18 @@ fn ensure_safe_permissions_and_read(path: &Path, uid_option: Option<u32>) -> Res
 // Parses the source definitions file from the given filename, or /etc/ssh/fetch_keys.conf if None,
 // into a HashMap of sources to URL templates
 fn get_source_defs(override_file_name_option: Option<&str>) -> Result<HashMap<String, String>> {
-    let (sources_defs_path, sources_defs_uid_option) = match override_file_name_option {
+    let (sources_defs_path, sources_defs_user_option) = match override_file_name_option {
         Some(override_file_name) => (override_file_name, None),
-        None => ("/etc/ssh/fetch_keys.conf", Some(0)),
+        None => (
+            "/etc/ssh/fetch_keys.conf",
+            Some(users::get_user_by_uid(0).context("Couldn't get root user")?),
+        ),
     };
     info!("Looking for source definitions at {:?}", sources_defs_path);
-    let sources_defs_string =
-        ensure_safe_permissions_and_read(Path::new(sources_defs_path), sources_defs_uid_option)?;
+    let sources_defs_string = ensure_safe_permissions_and_read(
+        Path::new(sources_defs_path),
+        sources_defs_user_option.as_ref(),
+    )?;
 
     let mut sources_defs_map = HashMap::new();
     for line in sources_defs_string.lines() {
@@ -99,35 +98,29 @@ fn get_source_defs(override_file_name_option: Option<&str>) -> Result<HashMap<St
     Ok(sources_defs_map)
 }
 
-// Returns the path to the home directory of the current effective uid
-fn get_current_euid_home_dir() -> Result<PathBuf> {
-    let uid = users::get_effective_uid();
-    let user =
-        users::get_user_by_uid(uid).context(format!("Couldn't get user with uid {}", uid))?;
+// Returns the path to the home directory of the given user
+fn get_user_home_dir(user: &User) -> Result<PathBuf> {
     Ok(user.home_dir().to_path_buf())
 }
 
 // Parses the user's key definitions file from the given filename, or ~/.ssh/fetch_keys if None,
 // into a Vec of lines
-fn get_user_defs(override_file_name_option: Option<&str>) -> Result<Vec<String>> {
-    let (user_defs_pathbuf, user_defs_uid_option) = match override_file_name_option {
+fn get_user_defs(override_file_name_option: Option<&str>, user: &User) -> Result<Vec<String>> {
+    let (user_defs_pathbuf, user_defs_user_option) = match override_file_name_option {
         Some(override_file_name) => (PathBuf::from(override_file_name), None),
-        None => (
-            get_current_euid_home_dir()?.join(".ssh/fetch_keys"),
-            Some(users::get_effective_uid()),
-        ),
+        None => (get_user_home_dir(user)?.join(".ssh/fetch_keys"), Some(user)),
     };
     info!("Looking for user definitions at {:?}", user_defs_pathbuf);
-    ensure_safe_permissions_and_read(&user_defs_pathbuf, user_defs_uid_option)
+    ensure_safe_permissions_and_read(&user_defs_pathbuf, user_defs_user_option)
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
 // Obtains the user's key cache directory path from the given filename, or ~/.ssh/fetch_keys.d if None,
 // creating it if it doesn't exist
-fn get_cache_directory(override_dir_name: Option<&str>) -> Result<PathBuf> {
+fn get_cache_directory(override_dir_name: Option<&str>, user: &User) -> Result<PathBuf> {
     let cache_path = override_dir_name
         .map(PathBuf::from)
-        .unwrap_or(get_current_euid_home_dir()?.join(".ssh/fetch_keys.d"));
+        .unwrap_or(get_user_home_dir(user)?.join(".ssh/fetch_keys.d"));
     if cache_path.exists() {
         info!("Found cache directory at {:?}", cache_path);
     } else {
@@ -167,11 +160,10 @@ fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf
     cache_directory.join(cache_filename)
 }
 
-fn get_cached_response(cache_path: &Path, cache_stale: u64) -> Result<(String, bool)> {
+fn get_cached_response(user: &User, cache_path: &Path, cache_stale: u64) -> Result<(String, bool)> {
     info!("Looking for a cached response at {:?}", cache_path);
 
-    let cached_result =
-        ensure_safe_permissions_and_read(cache_path, Some(users::get_effective_uid()));
+    let cached_result = ensure_safe_permissions_and_read(cache_path, Some(user));
     let is_stale = time::SystemTime::now()
         .duration_since(fs::metadata(cache_path)?.modified()?)?
         .as_secs()
@@ -260,6 +252,7 @@ fn write_to_cache(cache_path: PathBuf, response_str: &str) -> Result<()> {
 // If request is successful, then write the response to the cache and return Ok(Some(response))
 // If any other error occurs, return Err()
 fn process_user_def_line(
+    user: &User,
     line: String,
     sources_defs_map: &HashMap<String, String>,
     cache_directory: &Path,
@@ -276,7 +269,7 @@ fn process_user_def_line(
 
     let cache_path = get_cache_filename(&line_tokens, cache_directory);
 
-    match get_cached_response(&cache_path, cache_stale) {
+    match get_cached_response(user, &cache_path, cache_stale) {
         Ok((cached_string, true)) => {
             info!("Found fresh cached response. Omitting request");
             print!("{}", &cached_string);
@@ -317,6 +310,7 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
 
 // Parse and process a Vec of user definitions lines
 fn process_user_defs(
+    user: &User,
     source_defs: HashMap<String, String>,
     cache_directory: PathBuf,
     user_defs: Vec<String>,
@@ -330,6 +324,7 @@ fn process_user_defs(
 
     for (line_number, line) in user_defs.into_iter().enumerate() {
         let line_result = process_user_def_line(
+            user,
             line,
             &source_defs,
             &cache_directory,
@@ -445,12 +440,13 @@ fn fetch_print_keys() -> Result<()> {
     builder.init();
 
     let mut users_table = UsersCache::new();
-    let guard = switch_user(matches.value_of("username"), &mut users_table)?;
+    let (user, guard) = switch_user(matches.value_of("username"), &mut users_table)?;
 
     process_user_defs(
+        &user,
         get_source_defs(matches.value_of("source-defs"))?,
-        get_cache_directory(matches.value_of("cache-directory"))?,
-        get_user_defs(matches.value_of("user-defs"))?,
+        get_cache_directory(matches.value_of("cache-directory"), &user)?,
+        get_user_defs(matches.value_of("user-defs"), &user)?,
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
