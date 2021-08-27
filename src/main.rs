@@ -105,20 +105,6 @@ fn get_user_defs(user_defs_path: &Path, user_option: Option<&User>) -> Result<Ve
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
-// Creates the key cache directory at the given path if it doesn't exist
-fn get_cache_directory(cache_path: &Path) -> Result<&Path> {
-    if cache_path.exists() {
-        info!("Found cache directory at {:?}", cache_path);
-    } else {
-        info!("Creating cache directory at {:?}", cache_path);
-        fs::create_dir_all(&cache_path).context(format!(
-            "Couldn't create cache directory at {:?}",
-            cache_path
-        ))?;
-    }
-    Ok(cache_path)
-}
-
 // Construct the filename in which the cached response lives
 fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf {
     // Canonicalise user definition line by combining whitespace
@@ -223,6 +209,23 @@ fn request_from_url(url: String, request_timeout: u64) -> Result<String> {
 }
 
 fn write_to_cache(cache_path: PathBuf, response_str: &str) -> Result<()> {
+    let cache_path_parent = cache_path
+        .parent()
+        .ok_or_else(|| Error::msg(format!("Couldn't get path parent of {:?}", cache_path)))?;
+    if cache_path_parent.exists() {
+        ensure!(
+            cache_path_parent.is_dir(),
+            format!("{:?} exists but is not a directory", cache_path_parent)
+        );
+        info!("Found cache directory at {:?}", cache_path_parent);
+    } else {
+        info!("Creating cache directory at {:?}", cache_path_parent);
+        fs::create_dir_all(&cache_path_parent).context(format!(
+            "Couldn't create cache directory at {:?}",
+            cache_path_parent
+        ))?;
+    }
+
     info!("Saving response to cache location {:?}", cache_path);
     fs::write(&cache_path, response_str)
         .context(format!("Couldn't write cache at {:?}", cache_path))?;
@@ -281,7 +284,9 @@ fn process_user_def_line(
 
     print!("{}", response_str);
 
-    write_to_cache(cache_path, &response_str).context("Couldn't write to cache")?;
+    if let Err(e) = write_to_cache(cache_path, &response_str) {
+        warn!("{:?}", e.context("Couldn't write to cache"));
+    }
 
     Ok(Some(response_str))
 }
@@ -442,12 +447,10 @@ fn fetch_print_keys() -> Result<()> {
                 ),
             ),
         }?,
-        get_cache_directory(
-            matches
-                .value_of("cache-directory")
-                .map(Path::new)
-                .unwrap_or(&get_user_home_dir(&user).join(".ssh/fetch_keys.d")),
-        )?,
+        &match matches.value_of("cache-directory") {
+            Some(override_path) => PathBuf::from(override_path),
+            None => get_user_home_dir(&user).join(".ssh/fetch_keys.d"),
+        },
         match matches.value_of("user-defs") {
             Some(override_path) => get_user_defs(Path::new(override_path), None),
             None => get_user_defs(
