@@ -64,7 +64,8 @@ fn ensure_safe_permissions_and_read(path: &Path, user_option: Option<&User>) -> 
 // Parses the source definitions file from the given path into a HashMap of sources to URL templates;
 // if a user is given, checks the path is owned by and writeable only by that user
 fn get_source_defs(
-    (sources_defs_path, sources_defs_user_option): (&Path, Option<&User>),
+    sources_defs_path: &Path,
+    sources_defs_user_option: Option<&User>,
 ) -> Result<HashMap<String, String>> {
     info!("Looking for source definitions at {:?}", sources_defs_path);
     let sources_defs_string =
@@ -92,13 +93,13 @@ fn get_source_defs(
 }
 
 // Returns the path to the home directory of the given user
-fn get_user_home_dir(user: &User) -> Result<PathBuf> {
-    Ok(user.home_dir().to_path_buf())
+fn get_user_home_dir(user: &User) -> &Path {
+    user.home_dir()
 }
 
 // Parses the user's key definitions file from the given path into a Vec of lines;
 // if a user is given, checks the path is owned by and writeable only by that user
-fn get_user_defs((user_defs_path, user_option): (&Path, Option<&User>)) -> Result<Vec<String>> {
+fn get_user_defs(user_defs_path: &Path, user_option: Option<&User>) -> Result<Vec<String>> {
     info!("Looking for user definitions at {:?}", user_defs_path);
     ensure_safe_permissions_and_read(&user_defs_path, user_option)
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
@@ -429,35 +430,31 @@ fn fetch_print_keys() -> Result<()> {
 
     process_user_defs(
         &user,
-        get_source_defs(
-            matches
-                .value_of("source-defs")
-                .map(|override_file_name| (Path::new(override_file_name), None))
-                .unwrap_or((
-                    Path::new("/etc/ssh/fetch_keys.conf"),
-                    Some(
-                        users_table
-                            .get_user_by_uid(0)
-                            .context("Couldn't get root user")?
-                            .as_ref(),
-                    ),
-                )),
-        )?,
+        match matches.value_of("source-defs") {
+            Some(override_path) => get_source_defs(Path::new(override_path), None),
+            None => get_source_defs(
+                Path::new("/etc/ssh/fetch_keys.conf"),
+                Some(
+                    users_table
+                        .get_user_by_uid(0)
+                        .context("Couldn't get root user")?
+                        .as_ref(),
+                ),
+            ),
+        }?,
         get_cache_directory(
             matches
                 .value_of("cache-directory")
                 .map(Path::new)
-                .unwrap_or(&get_user_home_dir(&user)?.join(".ssh/fetch_keys.d")),
+                .unwrap_or(&get_user_home_dir(&user).join(".ssh/fetch_keys.d")),
         )?,
-        get_user_defs(
-            matches
-                .value_of("user-defs")
-                .map(|override_file_name| (Path::new(override_file_name), None))
-                .unwrap_or((
-                    &get_user_home_dir(&user)?.join(".ssh/fetch_keys"),
-                    Some(&user),
-                )),
-        )?,
+        match matches.value_of("user-defs") {
+            Some(override_path) => get_user_defs(Path::new(override_path), None),
+            None => get_user_defs(
+                &get_user_home_dir(&user).join(".ssh/fetch_keys"),
+                Some(&user),
+            ),
+        }?,
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
