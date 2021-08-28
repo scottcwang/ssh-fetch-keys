@@ -88,34 +88,104 @@ where
     }
 }
 
+#[automock]
+trait MetadataTrait {
+    fn uid_trait(&self) -> u32;
+    fn mode_trait(&self) -> u32;
+    fn modified_trait(&self) -> Result<time::SystemTime>;
+}
+
+impl MetadataTrait for std::fs::Metadata {
+    fn uid_trait(&self) -> u32 {
+        self.uid()
+    }
+
+    fn mode_trait(&self) -> u32 {
+        self.mode()
+    }
+
+    fn modified_trait(&self) -> Result<time::SystemTime> {
+        self.modified().map_err(anyhow::Error::from)
+    }
+}
+
+#[automock]
+trait FsTrait {
+    fn metadata(&self, path: &Path) -> Result<Box<dyn MetadataTrait>>;
+    fn read_to_string(&self, path: &Path) -> Result<String>;
+    fn create_dir_all(&self, path: &Path) -> Result<()>;
+    fn write(&self, path: &Path, contents: &str) -> Result<()>;
+    fn set_permissions(&self, path: &Path, perm: fs::Permissions) -> Result<()>;
+}
+
+struct StdFs;
+
+impl FsTrait for StdFs {
+    fn metadata(&self, path: &Path) -> Result<Box<dyn MetadataTrait>> {
+        fs::metadata(path)
+            .map(|metadata| Box::new(metadata) as Box<dyn MetadataTrait>)
+            .map_err(anyhow::Error::from)
+    }
+
+    fn read_to_string(&self, path: &Path) -> Result<String> {
+        fs::read_to_string(path).map_err(anyhow::Error::from)
+    }
+
+    fn create_dir_all(&self, path: &Path) -> Result<()> {
+        fs::create_dir_all(path).map_err(anyhow::Error::from)
+    }
+
+    fn write(&self, path: &Path, contents: &str) -> Result<()> {
+        fs::write(path, contents).map_err(anyhow::Error::from)
+    }
+
+    fn set_permissions(&self, path: &Path, perm: fs::Permissions) -> Result<()> {
+        fs::set_permissions(path, perm).map_err(anyhow::Error::from)
+    }
+}
+
 // If user_option is Some, ensures the path is owned by, and can be written only by, that user,
 // then reads the file at that path
-fn ensure_safe_permissions_and_read(path: &Path, user_option: Option<&User>) -> Result<String> {
+fn ensure_safe_permissions_and_read<U>(
+    path: &Path,
+    user_option: Option<&User>,
+    fs_trait: &U,
+) -> Result<String>
+where
+    U: FsTrait,
+{
     if let Some(user) = user_option {
-        let sources_defs_path_metadata =
-            fs::metadata(path).context(format!("Couldn't stat {:?}", path))?;
+        let sources_defs_path_metadata = fs_trait
+            .metadata(path)
+            .context(format!("Couldn't stat {:?}", path))?;
         ensure!(
-            sources_defs_path_metadata.uid() == user.uid(),
+            sources_defs_path_metadata.uid_trait() == user.uid(),
             format!("{:?} not owned by {:?}", path, user.name())
         );
         ensure!(
-            sources_defs_path_metadata.mode() & 0o022 == 0,
+            sources_defs_path_metadata.mode_trait() & 0o022 == 0,
             format!("{:?} is writable by group or world", path)
         );
     }
     info!("{:?} has correct permissions. Reading", path);
-    fs::read_to_string(path).context(format!("Could not read {:?}", path))
+    fs_trait
+        .read_to_string(path)
+        .context(format!("Could not read {:?}", path))
 }
 
 // Parses the source definitions file from the given path into a HashMap of sources to URL templates;
 // if a user is given, checks the path is owned by and writeable only by that user
-fn get_source_defs(
+fn get_source_defs<U>(
     sources_defs_path: &Path,
     sources_defs_user_option: Option<&User>,
-) -> Result<HashMap<String, String>> {
+    fs_trait: &U,
+) -> Result<HashMap<String, String>>
+where
+    U: FsTrait,
+{
     info!("Looking for source definitions at {:?}", sources_defs_path);
     let sources_defs_string =
-        ensure_safe_permissions_and_read(sources_defs_path, sources_defs_user_option)?;
+        ensure_safe_permissions_and_read(sources_defs_path, sources_defs_user_option, fs_trait)?;
 
     let mut sources_defs_map = HashMap::new();
     for line in sources_defs_string.lines() {
@@ -138,16 +208,18 @@ fn get_source_defs(
     Ok(sources_defs_map)
 }
 
-// Returns the path to the home directory of the given user
-fn get_user_home_dir(user: &User) -> &Path {
-    user.home_dir()
-}
-
 // Parses the user's key definitions file from the given path into a Vec of lines;
 // if a user is given, checks the path is owned by and writeable only by that user
-fn get_user_defs(user_defs_path: &Path, user_option: Option<&User>) -> Result<Vec<String>> {
+fn get_user_defs<U>(
+    user_defs_path: &Path,
+    user_option: Option<&User>,
+    fs_trait: &U,
+) -> Result<Vec<String>>
+where
+    U: FsTrait,
+{
     info!("Looking for user definitions at {:?}", user_defs_path);
-    ensure_safe_permissions_and_read(&user_defs_path, user_option)
+    ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
@@ -178,12 +250,20 @@ fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf
     cache_directory.join(cache_filename)
 }
 
-fn get_cached_response(user: &User, cache_path: &Path, cache_stale: u64) -> Result<(String, bool)> {
+fn get_cached_response<U>(
+    user: &User,
+    cache_path: &Path,
+    cache_stale: u64,
+    fs_trait: &U,
+) -> Result<(String, bool)>
+where
+    U: FsTrait,
+{
     info!("Looking for a cached response at {:?}", cache_path);
 
-    let cached_result = ensure_safe_permissions_and_read(cache_path, Some(user));
+    let cached_result = ensure_safe_permissions_and_read(cache_path, Some(user), fs_trait);
     let is_stale = time::SystemTime::now()
-        .duration_since(fs::metadata(cache_path)?.modified()?)?
+        .duration_since(fs_trait.metadata(cache_path)?.modified_trait()?)?
         .as_secs()
         <= cache_stale;
 
@@ -254,7 +334,10 @@ fn request_from_url(url: String, request_timeout: u64) -> Result<String> {
     Ok(String::from_utf8(response)?)
 }
 
-fn write_to_cache(cache_path: PathBuf, response_str: &str) -> Result<()> {
+fn write_to_cache<U>(cache_path: PathBuf, response_str: &str, fs_trait: &U) -> Result<()>
+where
+    U: FsTrait,
+{
     let cache_path_parent = cache_path
         .parent()
         .ok_or_else(|| Error::msg(format!("Couldn't get path parent of {:?}", cache_path)))?;
@@ -266,16 +349,20 @@ fn write_to_cache(cache_path: PathBuf, response_str: &str) -> Result<()> {
         info!("Found cache directory at {:?}", cache_path_parent);
     } else {
         info!("Creating cache directory at {:?}", cache_path_parent);
-        fs::create_dir_all(&cache_path_parent).context(format!(
-            "Couldn't create cache directory at {:?}",
-            cache_path_parent
-        ))?;
+        fs_trait
+            .create_dir_all(&cache_path_parent)
+            .context(format!(
+                "Couldn't create cache directory at {:?}",
+                cache_path_parent
+            ))?;
     }
 
     info!("Saving response to cache location {:?}", cache_path);
-    fs::write(&cache_path, response_str)
+    fs_trait
+        .write(&cache_path, response_str)
         .context(format!("Couldn't write cache at {:?}", cache_path))?;
-    fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o644))
+    fs_trait
+        .set_permissions(&cache_path, fs::Permissions::from_mode(0o644))
         .context(format!("Couldn't set permissions at {:?}", cache_path))?;
     Ok(())
 }
@@ -286,7 +373,7 @@ fn write_to_cache(cache_path: PathBuf, response_str: &str) -> Result<()> {
 // If response code is not 200, then return Ok(None)
 // If request is successful, then write the response to the cache and return Ok(Some(response))
 // If any other error occurs, return Err()
-fn process_user_def_line(
+fn process_user_def_line<U>(
     user: &User,
     line: String,
     sources_defs_map: &HashMap<String, String>,
@@ -294,7 +381,11 @@ fn process_user_def_line(
     cached_output: &mut Vec<String>,
     cache_stale: u64,
     request_timeout: u64,
-) -> Result<Option<String>> {
+    fs_trait: &U,
+) -> Result<Option<String>>
+where
+    U: FsTrait,
+{
     let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
 
     // Skip comment lines and blank lines
@@ -304,7 +395,7 @@ fn process_user_def_line(
 
     let cache_path = get_cache_filename(&line_tokens, cache_directory);
 
-    match get_cached_response(user, &cache_path, cache_stale) {
+    match get_cached_response(user, &cache_path, cache_stale, fs_trait) {
         Ok((cached_string, true)) => {
             info!("Found fresh cached response. Omitting request");
             print!("{}", &cached_string);
@@ -330,7 +421,7 @@ fn process_user_def_line(
 
     print!("{}", response_str);
 
-    if let Err(e) = write_to_cache(cache_path, &response_str) {
+    if let Err(e) = write_to_cache(cache_path, &response_str, fs_trait) {
         warn!("{:?}", e.context("Couldn't write to cache"));
     }
 
@@ -346,7 +437,7 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
 }
 
 // Parse and process a Vec of user definitions lines
-fn process_user_defs(
+fn process_user_defs<U>(
     user: &User,
     source_defs: HashMap<String, String>,
     cache_directory: &Path,
@@ -354,7 +445,11 @@ fn process_user_defs(
     key_to_find: Option<&str>,
     cache_stale: u64,
     request_timeout: u64,
-) -> Result<()> {
+    fs_trait: &U,
+) -> Result<()>
+where
+    U: FsTrait,
+{
     let mut cached_output: Vec<String> = Vec::new();
 
     let mut some_line_output = false;
@@ -368,6 +463,7 @@ fn process_user_defs(
             &mut cached_output,
             cache_stale,
             request_timeout,
+            fs_trait,
         );
 
         match line_result {
@@ -408,9 +504,10 @@ fn process_user_defs(
     Ok(())
 }
 
-fn fetch_print_keys<T>(switch_user_trait: &T) -> Result<()>
+fn fetch_print_keys<T, U>(switch_user_trait: &T, fs_trait: &U) -> Result<()>
 where
     T: SwitchUserTrait,
+    U: FsTrait,
 {
     // Read command-line arguments
     let matches = clap::App::new("ssh_fetch_keys")
@@ -489,7 +586,7 @@ where
     process_user_defs(
         &user,
         match matches.value_of("source-defs") {
-            Some(override_path) => get_source_defs(Path::new(override_path), None),
+            Some(override_path) => get_source_defs(Path::new(override_path), None, fs_trait),
             None => get_source_defs(
                 Path::new("/etc/ssh/fetch_keys.conf"),
                 Some(
@@ -498,22 +595,25 @@ where
                         .context("Couldn't get root user")?
                         .as_ref(),
                 ),
+                fs_trait,
             ),
         }?,
         &match matches.value_of("cache-directory") {
             Some(override_path) => PathBuf::from(override_path),
-            None => get_user_home_dir(&user).join(".ssh/fetch_keys.d"),
+            None => user.home_dir().join(".ssh/fetch_keys.d"),
         },
         match matches.value_of("user-defs") {
-            Some(override_path) => get_user_defs(Path::new(override_path), None),
+            Some(override_path) => get_user_defs(Path::new(override_path), None, fs_trait),
             None => get_user_defs(
-                &get_user_home_dir(&user).join(".ssh/fetch_keys"),
+                &user.home_dir().join(".ssh/fetch_keys"),
                 Some(&user),
+                fs_trait,
             ),
         }?,
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
+        fs_trait,
     )?;
 
     // Switch user back
@@ -523,7 +623,7 @@ where
 }
 
 fn main() {
-    if let Err(e) = fetch_print_keys(&SwitchUser {}) {
+    if let Err(e) = fetch_print_keys(&SwitchUser {}, &StdFs {}) {
         error!("{:?}", e.context("Exiting"));
         process::exit(1);
     };
