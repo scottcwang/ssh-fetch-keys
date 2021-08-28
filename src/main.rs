@@ -528,3 +528,72 @@ fn main() {
         process::exit(1);
     };
 }
+
+#[cfg(test)]
+mod tests_switch_user {
+    use super::*;
+    use users::mock::MockUsers;
+
+    fn prepare_switch_user_test(
+        user_name_option: Option<&str>,
+        expect_switch_user_call: bool,
+    ) -> Result<(User, Option<Box<dyn SwitchUserGuardTrait>>)> {
+        let mut mock_switch_user: MockSwitchUserTrait = MockSwitchUserTrait::new();
+        let expected_switch_user_guard: Box<dyn SwitchUserGuardTrait> =
+            Box::new(MockSwitchUserGuardTrait::new()) as Box<dyn SwitchUserGuardTrait>;
+
+        let expected_user_uid = 1000;
+        let expected_user_gid = 1000;
+        let expected_user_name = "test_user";
+        let expected_user = User::new(expected_user_uid, expected_user_name, expected_user_gid);
+
+        let current_user_uid = 1001;
+        let current_user_gid = 1001;
+        let current_user_name = "current_user";
+        let current_user = User::new(current_user_uid, current_user_name, current_user_gid);
+
+        mock_switch_user
+            .expect_switch_user_group()
+            .withf(move |uid, gid| *uid == expected_user_uid && *gid == expected_user_gid)
+            .return_once_st(|_, _| Ok(expected_switch_user_guard))
+            .times(match expect_switch_user_call {
+                true => 1,
+                false => 0,
+            });
+
+        let mut user_table = MockUsers::with_current_uid(current_user_uid);
+        user_table.add_user(expected_user);
+        user_table.add_user(current_user);
+
+        switch_user(user_name_option, &mut user_table, &mock_switch_user)
+    }
+
+    #[test]
+    fn test_some_user_name() {
+        let (actual_user, expected_switch_user_guard_option) =
+            prepare_switch_user_test(Some("test_user"), true).unwrap();
+
+        assert_eq!(actual_user.name(), "test_user");
+        assert_eq!(actual_user.uid(), 1000);
+        assert_eq!(actual_user.primary_group_id(), 1000);
+
+        assert!(expected_switch_user_guard_option.is_some());
+    }
+
+    #[test]
+    fn test_none_user_name() {
+        let (actual_user, expected_switch_user_guard_option) =
+            prepare_switch_user_test(None, false).unwrap();
+
+        assert_eq!(actual_user.name(), "current_user");
+        assert_eq!(actual_user.uid(), 1001);
+        assert_eq!(actual_user.primary_group_id(), 1001);
+
+        assert!(expected_switch_user_guard_option.is_none());
+    }
+
+    #[test]
+    fn test_bogus_user_name() {
+        assert!(prepare_switch_user_test(Some("bogus_user"), false).is_err());
+    }
+}
