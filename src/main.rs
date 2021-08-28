@@ -4,10 +4,11 @@ use curl::easy::Easy;
 use env_logger::Builder;
 use lazy_static::lazy_static;
 use log::{error, info, warn, LevelFilter};
+use mockall::automock;
 use regex::{Captures, Regex};
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::option::Option;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -18,28 +19,73 @@ use users::os::unix::UserExt;
 use users::switch;
 use users::{User, Users, UsersCache};
 
-// Switches the effective uid to the given user, or self if None
-fn switch_user<U>(
-    arg_user_name: Option<&str>,
-    user_table: &mut U,
-) -> Result<(User, switch::SwitchUserGuard)>
+#[automock]
+trait SwitchUserGuardTrait {}
+
+impl SwitchUserGuardTrait for switch::SwitchUserGuard {}
+
+#[automock]
+trait SwitchUserTrait {
+    fn switch_user_group(
+        &self,
+        uid: users::uid_t,
+        gid: users::gid_t,
+    ) -> Result<Box<dyn SwitchUserGuardTrait>, io::Error>;
+}
+
+struct SwitchUser;
+
+impl SwitchUserTrait for SwitchUser {
+    fn switch_user_group(
+        &self,
+        uid: users::uid_t,
+        gid: users::gid_t,
+    ) -> Result<Box<dyn SwitchUserGuardTrait>, io::Error> {
+        switch::switch_user_group(uid, gid)
+            .map(|switch_user_guard| Box::new(switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
+    }
+}
+
+// Switches the effective uid to the given user
+fn switch_user<T, U>(
+    user_name_option: Option<&str>,
+    user_table: &mut T,
+    switch_user_trait: &U,
+) -> Result<(User, Option<Box<dyn SwitchUserGuardTrait>>)>
 where
-    U: Users,
+    T: Users,
+    U: SwitchUserTrait,
 {
-    let user_name = arg_user_name.map(OsString::from).unwrap_or(
-        (user_table
-            .get_effective_username()
-            .context("Couldn't get effective username")?)
-        .to_os_string(),
-    );
-    let user = user_table
-        .get_user_by_name(&user_name)
-        .context(format!("No user with username {:?}", user_name))?;
-    let guard = switch::switch_user_group(user.uid(), user.primary_group_id()).context(format!(
-        "Couldn't seteuid to user with username {:?}",
-        user_name
-    ))?;
-    Ok((User::clone(&user), guard))
+    match user_name_option {
+        Some(user_name) => {
+            info!("Attempting to change to user {:?}", user_name);
+            let user = user_table
+                .get_user_by_name(&user_name)
+                .context(format!("No user with username {:?}", user_name))?;
+            let guard = switch_user_trait
+                .switch_user_group(user.uid(), user.primary_group_id())
+                .context(format!(
+                    "Couldn't seteuid to user with username {:?}",
+                    user_name
+                ))?;
+            Ok((User::clone(&user), Some(guard)))
+        }
+        None => {
+            let current_user_name = user_table
+                .get_current_username()
+                .ok_or_else(|| Error::msg("Couldn't get username of current user"))?;
+            info!("Current user is {:?}, not changing", current_user_name);
+            user_table
+                .get_user_by_name(&current_user_name)
+                .ok_or_else(|| {
+                    Error::msg(format!(
+                        "Couldn't get user with username {:?}",
+                        current_user_name
+                    ))
+                })
+                .map(|current_user| (User::clone(&current_user), None))
+        }
+    }
 }
 
 // If user_option is Some, ensures the path is owned by, and can be written only by, that user,
@@ -362,7 +408,10 @@ fn process_user_defs(
     Ok(())
 }
 
-fn fetch_print_keys() -> Result<()> {
+fn fetch_print_keys<T>(switch_user_trait: &T) -> Result<()>
+where
+    T: SwitchUserTrait,
+{
     // Read command-line arguments
     let matches = clap::App::new("ssh_fetch_keys")
         .version("0.1.0")
@@ -431,7 +480,11 @@ fn fetch_print_keys() -> Result<()> {
     builder.init();
 
     let mut users_table = UsersCache::new();
-    let (user, guard) = switch_user(matches.value_of("username"), &mut users_table)?;
+    let (user, guard) = switch_user(
+        matches.value_of("username"),
+        &mut users_table,
+        switch_user_trait,
+    )?;
 
     process_user_defs(
         &user,
@@ -470,7 +523,7 @@ fn fetch_print_keys() -> Result<()> {
 }
 
 fn main() {
-    if let Err(e) = fetch_print_keys() {
+    if let Err(e) = fetch_print_keys(&SwitchUser {}) {
         error!("{:?}", e.context("Exiting"));
         process::exit(1);
     };
