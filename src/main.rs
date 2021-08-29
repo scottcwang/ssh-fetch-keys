@@ -697,3 +697,97 @@ mod tests_switch_user {
         assert!(prepare_switch_user_test(Some("bogus_user"), false).is_err());
     }
 }
+
+#[cfg(test)]
+mod tests_ensure_safe_permissions_and_read {
+    use super::*;
+    use anyhow::anyhow;
+    use mockall::predicate;
+
+    #[test]
+    fn test_nonexistent() {
+        let mut mock_fs = MockFsTrait::new();
+        let path = Path::new("/home/user/.ssh/fetch_keys");
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(path))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+        assert!(
+            ensure_safe_permissions_and_read(&path, Some(&User::new(0, "", 0)), &mock_fs).is_err()
+        );
+    }
+
+    #[test]
+    fn test_not_owned_by_user() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let path = Path::new("/home/user/.ssh/fetch_keys");
+        mock_metadata
+            .expect_uid_trait()
+            .return_const(1000u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        assert!(
+            ensure_safe_permissions_and_read(&path, Some(&User::new(0, "", 0)), &mock_fs).is_err()
+        );
+    }
+
+    #[test]
+    fn test_bad_permissions() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let path = Path::new("/home/user/.ssh/fetch_keys");
+        mock_metadata
+            .expect_uid_trait()
+            .return_const(1000u32)
+            .times(1);
+        mock_metadata
+            .expect_mode_trait()
+            .return_const(0o666u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        assert!(
+            ensure_safe_permissions_and_read(&path, Some(&User::new(1000, "", 0)), &mock_fs)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_read_to_string() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let path = Path::new("/home/user/.ssh/fetch_keys");
+        mock_metadata
+            .expect_uid_trait()
+            .return_const(1000u32)
+            .times(1);
+        mock_metadata
+            .expect_mode_trait()
+            .return_const(0o600u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(path))
+            .return_once_st(|_| Ok("test string".to_string()))
+            .times(1);
+        assert_eq!(
+            ensure_safe_permissions_and_read(&path, Some(&User::new(1000, "", 0)), &mock_fs)
+                .unwrap(),
+            "test string"
+        );
+    }
+}
