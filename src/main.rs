@@ -150,20 +150,21 @@ fn ensure_safe_permissions_and_read<U>(
     path: &Path,
     user_option: Option<&User>,
     fs_trait: &U,
-) -> Result<String>
+) -> Result<(String, Box<dyn MetadataTrait>)>
 where
     U: FsTrait,
 {
+    let metadata = fs_trait
+        .metadata(path)
+        .context(format!("Couldn't stat {:?}", path))?;
+
     if let Some(user) = user_option {
-        let sources_defs_path_metadata = fs_trait
-            .metadata(path)
-            .context(format!("Couldn't stat {:?}", path))?;
         ensure!(
-            sources_defs_path_metadata.uid_trait() == user.uid(),
+            metadata.uid_trait() == user.uid(),
             format!("{:?} not owned by {:?}", path, user.name())
         );
         ensure!(
-            sources_defs_path_metadata.mode_trait() & 0o022 == 0,
+            metadata.mode_trait() & 0o022 == 0,
             format!("{:?} is writable by group or world", path)
         );
     }
@@ -171,6 +172,7 @@ where
     fs_trait
         .read_to_string(path)
         .context(format!("Could not read {:?}", path))
+        .map(|read_string| (read_string, metadata))
 }
 
 // Parses the source definitions file from the given path into a HashMap of sources to URL templates;
@@ -184,7 +186,7 @@ where
     U: FsTrait,
 {
     info!("Looking for source definitions at {:?}", sources_defs_path);
-    let sources_defs_string =
+    let (sources_defs_string, _) =
         ensure_safe_permissions_and_read(sources_defs_path, sources_defs_user_option, fs_trait)?;
 
     let mut sources_defs_map = HashMap::new();
@@ -220,7 +222,7 @@ where
 {
     info!("Looking for user definitions at {:?}", user_defs_path);
     ensure_safe_permissions_and_read(user_defs_path, user_option, fs_trait)
-        .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
+        .map(|(s, _)| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
 // Construct the filename in which the cached response lives
@@ -261,13 +263,14 @@ where
 {
     info!("Looking for a cached response at {:?}", cache_path);
 
-    let cached_result = ensure_safe_permissions_and_read(cache_path, Some(user), fs_trait);
+    let (cached_result, metadata) =
+        ensure_safe_permissions_and_read(cache_path, Some(user), fs_trait)?;
     let is_stale = time::SystemTime::now()
-        .duration_since(fs_trait.metadata(cache_path)?.modified_trait()?)?
+        .duration_since(metadata.modified_trait()?)?
         .as_secs()
         <= cache_stale;
 
-    cached_result.map(|cached_string| (cached_string, is_stale))
+    Ok((cached_result, is_stale))
 }
 
 // Construct URL, given HashMap of sources to URL templates as well as tokens
@@ -767,11 +770,11 @@ mod tests_ensure_safe_permissions_and_read {
         mock_metadata
             .expect_uid_trait()
             .return_const(1000u32)
-            .times(1);
+            .times(2);
         mock_metadata
             .expect_mode_trait()
             .return_const(0o600u32)
-            .times(1);
+            .times(2);
         mock_fs
             .expect_metadata()
             .with(predicate::eq(path))
@@ -782,10 +785,11 @@ mod tests_ensure_safe_permissions_and_read {
             .with(predicate::eq(path))
             .return_once_st(|_| Ok("test string".to_string()))
             .times(1);
-        assert_eq!(
+        let (actual_string, actual_metadata) =
             ensure_safe_permissions_and_read(&path, Some(&User::new(1000, "", 0)), &mock_fs)
-                .unwrap(),
-            "test string"
-        );
+                .unwrap();
+        assert_eq!(actual_string, "test string");
+        assert_eq!(actual_metadata.uid_trait(), 1000u32);
+        assert_eq!(actual_metadata.mode_trait(), 0o600u32);
     }
 }
