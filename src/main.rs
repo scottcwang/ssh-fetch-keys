@@ -219,7 +219,7 @@ where
     U: FsTrait,
 {
     info!("Looking for user definitions at {:?}", user_defs_path);
-    ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)
+    ensure_safe_permissions_and_read(user_defs_path, user_option, fs_trait)
         .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
 }
 
@@ -239,7 +239,7 @@ fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf
         .iter()
         .map(|token| {
             REGEX_FILENAME
-                .replace_all(&token, |_: &Captures| "-")
+                .replace_all(token, |_: &Captures| "-")
                 .into_owned()
         })
         .collect::<Vec<String>>()
@@ -349,12 +349,10 @@ where
         info!("Found cache directory at {:?}", cache_path_parent);
     } else {
         info!("Creating cache directory at {:?}", cache_path_parent);
-        fs_trait
-            .create_dir_all(&cache_path_parent)
-            .context(format!(
-                "Couldn't create cache directory at {:?}",
-                cache_path_parent
-            ))?;
+        fs_trait.create_dir_all(cache_path_parent).context(format!(
+            "Couldn't create cache directory at {:?}",
+            cache_path_parent
+        ))?;
     }
 
     info!("Saving response to cache location {:?}", cache_path);
@@ -459,7 +457,7 @@ where
             user,
             line,
             &source_defs,
-            &cache_directory,
+            cache_directory,
             &mut cached_output,
             cache_stale,
             request_timeout,
