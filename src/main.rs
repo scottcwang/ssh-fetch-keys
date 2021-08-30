@@ -779,3 +779,71 @@ mod tests_ensure_safe_permissions_and_read {
         assert_eq!(actual_metadata.mode_trait(), 0o600u32);
     }
 }
+
+#[cfg(test)]
+mod tests_get_source_defs {
+    use super::*;
+
+    fn prepare_get_source_defs_test(
+        source_defs_string: &str,
+        expected_result_vec_pairs: Option<Vec<(&str, &str)>>,
+    ) {
+        let actual_source_defs_map_result = get_source_defs(source_defs_string);
+
+        match actual_source_defs_map_result {
+            Ok(actual_source_defs_map) => {
+                assert_eq!(
+                    actual_source_defs_map,
+                    expected_result_vec_pairs
+                        .unwrap()
+                        .into_iter()
+                        .map(|(a, b)| (a.to_string(), b.to_string()))
+                        .collect()
+                );
+            }
+            Err(_) => {
+                assert!(expected_result_vec_pairs.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_empty() {
+        prepare_get_source_defs_test("", None);
+    }
+
+    #[test]
+    fn test_one_line_two_tokens() {
+        prepare_get_source_defs_test("1 2", Some(vec![("1", "2")]));
+    }
+
+    #[test]
+    fn test_extra_spaces() {
+        prepare_get_source_defs_test("1   2", Some(vec![("1", "2")]));
+    }
+
+    #[test]
+    fn test_comment_line() {
+        prepare_get_source_defs_test("1 2\n # comment", Some(vec![("1", "2")]));
+    }
+
+    #[test]
+    fn test_blank_line() {
+        prepare_get_source_defs_test("1 2\n\n3 4", Some(vec![("1", "2"), ("3", "4")]));
+    }
+
+    #[test]
+    fn test_two_lines() {
+        prepare_get_source_defs_test("1 2\n3 4", Some(vec![("1", "2"), ("3", "4")]));
+    }
+
+    #[test]
+    fn test_three_tokens() {
+        prepare_get_source_defs_test("1 2 3", Some(vec![("1", "2")]));
+    }
+
+    #[test]
+    fn test_one_token() {
+        prepare_get_source_defs_test("1 2\n3", Some(vec![("1", "2")]));
+    }
+}
