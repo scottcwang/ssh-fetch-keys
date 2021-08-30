@@ -877,3 +877,50 @@ mod tests_get_user_defs {
         prepare_get_user_defs_test("1\n2", vec!["1", "2"]);
     }
 }
+
+#[cfg(test)]
+mod tests_get_cache_filename {
+    use super::*;
+
+    fn prepare_get_cache_filename_test(
+        line: Vec<&str>,
+        cache_directory: &str,
+        expected_result: &str,
+    ) {
+        assert_eq!(
+            get_cache_filename(
+                &line
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<String>>(),
+                Path::new(cache_directory)
+            ),
+            PathBuf::from(expected_result)
+        );
+    }
+
+    #[test]
+    fn test_one_token() {
+        prepare_get_cache_filename_test(vec!["1"], "/tmp", "/tmp/83dcefb7-1");
+    }
+
+    #[test]
+    fn test_two_tokens() {
+        prepare_get_cache_filename_test(vec!["1", "2"], "/tmp", "/tmp/87bb2397-1_2");
+    }
+
+    #[test]
+    fn test_allowed_nonalphanumeric_character() {
+        prepare_get_cache_filename_test(vec!["1-2"], "/tmp", "/tmp/32155dda-1-2");
+    }
+
+    #[test]
+    fn test_forbidden_nonalphanumeric_character() {
+        prepare_get_cache_filename_test(vec!["1*2"], "/tmp", "/tmp/7d54cb1d-1-2");
+    }
+
+    #[test]
+    fn test_directory() {
+        prepare_get_cache_filename_test(vec!["1*2"], "/tmp/test", "/tmp/test/7d54cb1d-1-2");
+    }
+}
