@@ -175,54 +175,35 @@ where
         .map(|read_string| (read_string, metadata))
 }
 
-// Parses the source definitions file from the given path into a HashMap of sources to URL templates;
-// if a user is given, checks the path is owned by and writeable only by that user
-fn get_source_defs<U>(
-    sources_defs_path: &Path,
-    sources_defs_user_option: Option<&User>,
-    fs_trait: &U,
-) -> Result<HashMap<String, String>>
-where
-    U: FsTrait,
-{
-    info!("Looking for source definitions at {:?}", sources_defs_path);
-    let (sources_defs_string, _) =
-        ensure_safe_permissions_and_read(sources_defs_path, sources_defs_user_option, fs_trait)?;
-
-    let mut sources_defs_map = HashMap::new();
-    for line in sources_defs_string.lines() {
+// Parses the source definitions &str into a HashMap of sources to URL templates
+fn get_source_defs(source_defs_string: &str) -> Result<HashMap<String, String>> {
+    let mut source_defs_map = HashMap::new();
+    for line in source_defs_string.lines() {
         let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
         if line_tokens.len() < 2 || line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#'
         {
             continue;
         }
-        sources_defs_map.insert(
+        source_defs_map.insert(
             line_tokens.get(0).unwrap().to_string(),
             line_tokens.get(1).unwrap().to_string(),
         );
     }
 
     ensure!(
-        !sources_defs_map.is_empty(),
+        !source_defs_map.is_empty(),
         "Read sources definitions file, but no sources were defined in it"
     );
 
-    Ok(sources_defs_map)
+    Ok(source_defs_map)
 }
 
-// Parses the user's key definitions file from the given path into a Vec of lines;
-// if a user is given, checks the path is owned by and writeable only by that user
-fn get_user_defs<U>(
-    user_defs_path: &Path,
-    user_option: Option<&User>,
-    fs_trait: &U,
-) -> Result<Vec<String>>
-where
-    U: FsTrait,
-{
-    info!("Looking for user definitions at {:?}", user_defs_path);
-    ensure_safe_permissions_and_read(user_defs_path, user_option, fs_trait)
-        .map(|(s, _)| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
+// Parses the user's key definitions &str into a Vec of lines
+fn get_user_defs(user_defs_string: &str) -> Vec<String> {
+    user_defs_string
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<String>>()
 }
 
 // Construct the filename in which the cached response lives
@@ -252,34 +233,23 @@ fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf
     cache_directory.join(cache_filename)
 }
 
-fn get_cached_response<U>(
-    user: &User,
-    cache_path: &Path,
-    cache_stale: u64,
-    fs_trait: &U,
-) -> Result<(String, bool)>
-where
-    U: FsTrait,
-{
-    info!("Looking for a cached response at {:?}", cache_path);
-
-    let (cached_result, metadata) =
-        ensure_safe_permissions_and_read(cache_path, Some(user), fs_trait)?;
-    let is_stale = time::SystemTime::now()
+// Returns Err(_) if the modified time is not available in the metadata,
+// Ok(false) if the modified time is earlier than cache_stale seconds ago, and
+// Ok(true) if the modified time is later than cache_stale seconds ago
+fn is_cache_fresh(metadata: Box<dyn MetadataTrait>, cache_stale: u64) -> Result<bool> {
+    Ok(time::SystemTime::now()
         .duration_since(metadata.modified_trait()?)?
         .as_secs()
-        <= cache_stale;
-
-    Ok((cached_result, is_stale))
+        <= cache_stale)
 }
 
 // Construct URL, given HashMap of sources to URL templates as well as tokens
 fn construct_url(
-    sources_defs_map: &HashMap<String, String>,
+    source_defs_map: &HashMap<String, String>,
     line_tokens: Vec<String>,
 ) -> Result<String> {
     let source = line_tokens.get(0).unwrap();
-    let source_def = sources_defs_map.get(source);
+    let source_def = source_defs_map.get(source);
 
     let url_template =
         source_def.ok_or_else(|| Error::msg(format!("{} is not a defined source", source)))?;
@@ -377,7 +347,7 @@ where
 fn process_user_def_line<U>(
     user: &User,
     line: String,
-    sources_defs_map: &HashMap<String, String>,
+    source_defs_map: &HashMap<String, String>,
     cache_directory: &Path,
     cached_output: &mut Vec<String>,
     cache_stale: u64,
@@ -396,13 +366,16 @@ where
 
     let cache_path = get_cache_filename(&line_tokens, cache_directory);
 
-    match get_cached_response(user, &cache_path, cache_stale, fs_trait) {
-        Ok((cached_string, true)) => {
+    info!("Looking for a cached response at {:?}", cache_path);
+    let (cached_string, metadata) =
+        ensure_safe_permissions_and_read(&cache_path, Some(user), fs_trait)?;
+    match is_cache_fresh(metadata, cache_stale) {
+        Ok(true) => {
             info!("Found fresh cached response. Omitting request");
             print!("{}", &cached_string);
             return Ok(Some(cached_string));
         }
-        Ok((cached_string, false)) => {
+        Ok(false) => {
             info!("Cache is stale. Proceeding to make request");
             cached_output.push(cached_string);
         }
@@ -415,7 +388,7 @@ where
     }
 
     let url =
-        construct_url(sources_defs_map, line_tokens).context("Couldn't construct request URL")?;
+        construct_url(source_defs_map, line_tokens).context("Couldn't construct request URL")?;
 
     let response_str =
         request_from_url(url, request_timeout).context("Request was unsuccessful")?;
@@ -586,31 +559,44 @@ where
 
     process_user_defs(
         &user,
-        match matches.value_of("source-defs") {
-            Some(override_path) => get_source_defs(Path::new(override_path), None, fs_trait),
-            None => get_source_defs(
-                Path::new("/etc/ssh/fetch_keys.conf"),
-                Some(
-                    users_table
-                        .get_user_by_uid(0)
-                        .context("Couldn't get root user")?
-                        .as_ref(),
+        {
+            let (source_defs_path, user_option) = match matches.value_of("source-defs") {
+                Some(override_path) => (Path::new(override_path), None),
+                None => (
+                    Path::new("/etc/ssh/fetch_keys.conf"),
+                    Some(
+                        users_table
+                            .get_user_by_uid(0)
+                            .context("Couldn't get root user")?
+                            .as_ref()
+                            .clone(),
+                    ),
                 ),
-                fs_trait,
-            ),
+            };
+            info!("Looking for source definitions at {:?}", source_defs_path);
+            get_source_defs(
+                &ensure_safe_permissions_and_read(
+                    source_defs_path,
+                    user_option.as_ref(),
+                    fs_trait,
+                )?
+                .0,
+            )
         }?,
         &match matches.value_of("cache-directory") {
             Some(override_path) => PathBuf::from(override_path),
             None => user.home_dir().join(".ssh/fetch_keys.d"),
         },
-        match matches.value_of("user-defs") {
-            Some(override_path) => get_user_defs(Path::new(override_path), None, fs_trait),
-            None => get_user_defs(
-                &user.home_dir().join(".ssh/fetch_keys"),
-                Some(&user),
-                fs_trait,
-            ),
-        }?,
+        {
+            let (user_defs_path, user_option) = match matches.value_of("user-defs") {
+                Some(override_path) => (PathBuf::from(override_path), None),
+                None => (user.home_dir().join(".ssh/fetch_keys"), Some(&user)),
+            };
+            info!("Looking for user definitions at {:?}", user_defs_path);
+            get_user_defs(
+                &ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)?.0,
+            )
+        },
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
