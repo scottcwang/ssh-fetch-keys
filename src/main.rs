@@ -924,3 +924,47 @@ mod tests_get_cache_filename {
         prepare_get_cache_filename_test(vec!["1*2"], "/tmp/test", "/tmp/test/7d54cb1d-1-2");
     }
 }
+
+#[cfg(test)]
+mod tests_is_cache_fresh {
+    use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn test_err() {
+        let mut mock_metadata = MockMetadataTrait::new();
+        mock_metadata
+            .expect_modified_trait()
+            .return_once_st(|| Err(anyhow!("")))
+            .times(1);
+        assert!(is_cache_fresh(Box::new(mock_metadata), 0).is_err());
+    }
+
+    #[test]
+    fn test_stale_ok_false() {
+        let mut mock_metadata = MockMetadataTrait::new();
+        mock_metadata
+            .expect_modified_trait()
+            .return_once_st(|| {
+                Ok(time::SystemTime::now()
+                    .checked_sub(time::Duration::from_secs(60))
+                    .unwrap())
+            })
+            .times(1);
+        assert!(!is_cache_fresh(Box::new(mock_metadata), 1).unwrap());
+    }
+
+    #[test]
+    fn test_fresh_ok_true() {
+        let mut mock_metadata = MockMetadataTrait::new();
+        mock_metadata
+            .expect_modified_trait()
+            .return_once_st(|| {
+                Ok(time::SystemTime::now()
+                    .checked_sub(time::Duration::from_secs(1))
+                    .unwrap())
+            })
+            .times(1);
+        assert!(is_cache_fresh(Box::new(mock_metadata), 60).unwrap());
+    }
+}
