@@ -847,3 +847,33 @@ mod tests_get_source_defs {
         prepare_get_source_defs_test("1 2\n3", Some(vec![("1", "2")]));
     }
 }
+
+#[cfg(test)]
+mod tests_get_user_defs {
+    use super::*;
+
+    fn prepare_get_user_defs_test(user_defs_string: &str, expected_result_vec: Vec<&str>) {
+        assert_eq!(
+            get_user_defs(user_defs_string),
+            expected_result_vec
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        );
+    }
+
+    #[test]
+    fn test_empty() {
+        prepare_get_user_defs_test("", vec![]);
+    }
+
+    #[test]
+    fn test_one_line() {
+        prepare_get_user_defs_test("1 2", vec!["1 2"]);
+    }
+
+    #[test]
+    fn test_two_lines() {
+        prepare_get_user_defs_test("1\n2", vec!["1", "2"]);
+    }
+}
