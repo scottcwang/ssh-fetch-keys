@@ -278,33 +278,42 @@ fn construct_url(
     Ok(url)
 }
 
-// Make request, timing out after request_timeout seconds
-fn request_from_url(url: String, request_timeout: u64) -> Result<String> {
-    info!("Making request to {}", url);
-    let mut response = Vec::new();
-    let mut easy = Easy::new();
-    easy.url(&url)?;
-    easy.timeout(time::Duration::from_secs(request_timeout))?;
-    easy.follow_location(true)?;
-    {
-        let mut transfer = easy.transfer();
-        transfer.write_function(|data| {
-            response.extend_from_slice(data);
-            Ok(data.len())
-        })?;
-        transfer.perform()
+#[automock]
+trait HttpClientTrait {
+    fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String>;
+}
+
+struct CurlHttpClient;
+
+impl HttpClientTrait for CurlHttpClient {
+    // Make request, timing out after request_timeout seconds
+    fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String> {
+        info!("Making request to {}", url);
+        let mut response = Vec::new();
+        let mut easy = Easy::new();
+        easy.url(&url)?;
+        easy.timeout(time::Duration::from_secs(request_timeout))?;
+        easy.follow_location(true)?;
+        {
+            let mut transfer = easy.transfer();
+            transfer.write_function(|data| {
+                response.extend_from_slice(data);
+                Ok(data.len())
+            })?;
+            transfer.perform()
+        }
+        .context("Transfer failed in libcurl")?;
+
+        // If response code is not 200, return Error
+        let response_code = easy.response_code()?;
+        ensure!(
+            response_code == 200,
+            format!("Response code was {}, not 200", response_code)
+        );
+
+        info!("Request was successful");
+        Ok(String::from_utf8(response)?)
     }
-    .context("Transfer failed in libcurl")?;
-
-    // If response code is not 200, return Error
-    let response_code = easy.response_code()?;
-    ensure!(
-        response_code == 200,
-        format!("Response code was {}, not 200", response_code)
-    );
-
-    info!("Request was successful");
-    Ok(String::from_utf8(response)?)
 }
 
 fn write_to_cache<U>(cache_path: PathBuf, response_str: &str, fs_trait: &U) -> Result<()>
@@ -344,7 +353,7 @@ where
 // If response code is not 200, then return Ok(None)
 // If request is successful, then write the response to the cache and return Ok(Some(response))
 // If any other error occurs, return Err()
-fn process_user_def_line<U>(
+fn process_user_def_line<T, U>(
     user: &User,
     line: String,
     source_defs_map: &HashMap<String, String>,
@@ -352,9 +361,11 @@ fn process_user_def_line<U>(
     cached_output: &mut Vec<String>,
     cache_stale: u64,
     request_timeout: u64,
+    http_client_trait: &T,
     fs_trait: &U,
 ) -> Result<Option<String>>
 where
+    T: HttpClientTrait,
     U: FsTrait,
 {
     let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
@@ -390,8 +401,9 @@ where
     let url =
         construct_url(source_defs_map, line_tokens).context("Couldn't construct request URL")?;
 
-    let response_str =
-        request_from_url(url, request_timeout).context("Request was unsuccessful")?;
+    let response_str = http_client_trait
+        .request_from_url(url, request_timeout)
+        .context("Request was unsuccessful")?;
 
     print!("{}", response_str);
 
@@ -411,7 +423,7 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
 }
 
 // Parse and process a Vec of user definitions lines
-fn process_user_defs<U>(
+fn process_user_defs<T, U>(
     user: &User,
     source_defs: HashMap<String, String>,
     cache_directory: &Path,
@@ -419,9 +431,11 @@ fn process_user_defs<U>(
     key_to_find: Option<&str>,
     cache_stale: u64,
     request_timeout: u64,
+    http_client_trait: &T,
     fs_trait: &U,
 ) -> Result<()>
 where
+    T: HttpClientTrait,
     U: FsTrait,
 {
     let mut cached_output: Vec<String> = Vec::new();
@@ -437,6 +451,7 @@ where
             &mut cached_output,
             cache_stale,
             request_timeout,
+            http_client_trait,
             fs_trait,
         );
 
@@ -478,10 +493,15 @@ where
     Ok(())
 }
 
-fn fetch_print_keys<T, U>(switch_user_trait: &T, fs_trait: &U) -> Result<()>
+fn fetch_print_keys<T, U, V>(
+    switch_user_trait: &T,
+    http_client_trait: &U,
+    fs_trait: &V,
+) -> Result<()>
 where
     T: SwitchUserTrait,
-    U: FsTrait,
+    U: HttpClientTrait,
+    V: FsTrait,
 {
     // Read command-line arguments
     let matches = clap::App::new("ssh_fetch_keys")
@@ -600,6 +620,7 @@ where
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
+        http_client_trait,
         fs_trait,
     )?;
 
@@ -610,7 +631,7 @@ where
 }
 
 fn main() {
-    if let Err(e) = fetch_print_keys(&SwitchUser {}, &StdFs {}) {
+    if let Err(e) = fetch_print_keys(&SwitchUser {}, &CurlHttpClient {}, &StdFs {}) {
         error!("{:?}", e.context("Exiting"));
         process::exit(1);
     };
