@@ -394,7 +394,6 @@ where
     ) {
         Ok((true, cached_string)) => {
             info!("Found fresh cached response. Omitting request");
-            print!("{}", &cached_string);
             return Ok(Some(cached_string));
         }
         Ok((false, cached_string)) => {
@@ -416,8 +415,6 @@ where
         .request_from_url(url, request_timeout)
         .context("Request was unsuccessful")?;
 
-    print!("{}", response_str);
-
     if let Err(e) = write_to_cache(cache_path, &response_str, fs_trait) {
         warn!("{:?}", e.context("Couldn't write to cache"));
     }
@@ -433,8 +430,21 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
     }
 }
 
+#[automock]
+trait PrintTrait {
+    fn print(&self, s: &str);
+}
+
+struct StdOut;
+
+impl PrintTrait for StdOut {
+    fn print(&self, s: &str) {
+        print!("{}", s);
+    }
+}
+
 // Parse and process a Vec of user definitions lines
-fn process_user_defs<T, U>(
+fn process_user_defs<T, U, V>(
     user: &User,
     source_defs: HashMap<String, String>,
     cache_directory: &Path,
@@ -444,10 +454,12 @@ fn process_user_defs<T, U>(
     request_timeout: u64,
     http_client_trait: &T,
     fs_trait: &U,
+    print_trait: &V,
 ) -> Result<()>
 where
     T: HttpClientTrait,
     U: FsTrait,
+    V: PrintTrait,
 {
     let mut cached_output: Vec<String> = Vec::new();
 
@@ -470,6 +482,7 @@ where
             Ok(Some(line_retrieved_response)) => {
                 // If there was no error processing this line, and there exists a fresh cache or the response code is 200 for this line ...
                 some_line_output = true;
+                print_trait.print(&line_retrieved_response);
                 if is_key_in_response_str(key_to_find, line_retrieved_response) {
                     // ... and the key_to_find (if Some) is found, then skip subsequent lines
                     info!(
@@ -497,22 +510,24 @@ where
         warn!("None of the source definitions provided a recent cached response or a successful request. Using stale caches");
 
         for cached_output_entry in cached_output {
-            print!("{}", cached_output_entry);
+            print_trait.print(&cached_output_entry);
         }
     }
 
     Ok(())
 }
 
-fn fetch_print_keys<T, U, V>(
+fn fetch_print_keys<T, U, V, W>(
     switch_user_trait: &T,
     http_client_trait: &U,
     fs_trait: &V,
+    print_trait: &W,
 ) -> Result<()>
 where
     T: SwitchUserTrait,
     U: HttpClientTrait,
     V: FsTrait,
+    W: PrintTrait,
 {
     // Read command-line arguments
     let matches = clap::App::new("ssh_fetch_keys")
@@ -633,6 +648,7 @@ where
         matches.value_of("request-timeout").unwrap_or("5").parse()?,
         http_client_trait,
         fs_trait,
+        print_trait,
     )?;
 
     // Switch user back
@@ -642,7 +658,7 @@ where
 }
 
 fn main() {
-    if let Err(e) = fetch_print_keys(&SwitchUser {}, &CurlHttpClient {}, &StdFs {}) {
+    if let Err(e) = fetch_print_keys(&SwitchUser {}, &CurlHttpClient {}, &StdFs {}, &StdOut {}) {
         error!("{:?}", e.context("Exiting"));
         process::exit(1);
     };
