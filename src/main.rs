@@ -93,6 +93,7 @@ trait MetadataTrait {
     fn uid_trait(&self) -> u32;
     fn mode_trait(&self) -> u32;
     fn modified_trait(&self) -> Result<time::SystemTime>;
+    fn is_dir_trait(&self) -> bool;
 }
 
 impl MetadataTrait for std::fs::Metadata {
@@ -106,6 +107,10 @@ impl MetadataTrait for std::fs::Metadata {
 
     fn modified_trait(&self) -> Result<time::SystemTime> {
         self.modified().map_err(anyhow::Error::from)
+    }
+
+    fn is_dir_trait(&self) -> bool {
+        self.is_dir()
     }
 }
 
@@ -323,18 +328,21 @@ where
     let cache_path_parent = cache_path
         .parent()
         .ok_or_else(|| Error::msg(format!("Couldn't get path parent of {:?}", cache_path)))?;
-    if cache_path_parent.exists() {
-        ensure!(
-            cache_path_parent.is_dir(),
-            format!("{:?} exists but is not a directory", cache_path_parent)
-        );
-        info!("Found cache directory at {:?}", cache_path_parent);
-    } else {
-        info!("Creating cache directory at {:?}", cache_path_parent);
-        fs_trait.create_dir_all(cache_path_parent).context(format!(
-            "Couldn't create cache directory at {:?}",
-            cache_path_parent
-        ))?;
+    match fs_trait.metadata(cache_path_parent) {
+        Ok(cache_path_parent_metadata) => {
+            ensure!(
+                cache_path_parent_metadata.is_dir_trait(),
+                format!("{:?} exists but is not a directory", cache_path_parent)
+            );
+            info!("Found cache directory at {:?}", cache_path_parent);
+        }
+        Err(_) => {
+            info!("Creating cache directory at {:?}", cache_path_parent);
+            fs_trait.create_dir_all(cache_path_parent).context(format!(
+                "Couldn't create cache directory at {:?}",
+                cache_path_parent
+            ))?;
+        }
     }
 
     info!("Saving response to cache location {:?}", cache_path);
