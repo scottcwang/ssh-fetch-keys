@@ -1052,3 +1052,173 @@ mod tests_construct_url {
         prepare_construct_url_test(vec![("a", "z{1}{2}{3}")], "a b", Err(anyhow!("")));
     }
 }
+
+#[cfg(test)]
+mod tests_write_to_cache {
+    use super::*;
+    use anyhow::anyhow;
+    use mockall::predicate;
+
+    #[test]
+    fn test_bad_cache_path_parent() {
+        assert!(write_to_cache(PathBuf::from("/"), "", &MockFsTrait::new()).is_err());
+    }
+
+    #[test]
+    fn test_cache_dir_exists() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
+        let response_str = "a";
+        let expected_path_parent = Path::new("/home/user/.ssh/fetch_keys.d/");
+        mock_metadata
+            .expect_is_dir_trait()
+            .return_const(true)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        mock_fs
+            .expect_write()
+            .with(predicate::eq(cache_path), predicate::eq(response_str))
+            .return_once_st(|_, _| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_set_permissions()
+            .with(
+                predicate::eq(cache_path),
+                predicate::eq(fs::Permissions::from_mode(0o644)),
+            )
+            .return_once_st(|_, _| Ok(()))
+            .times(1);
+        assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_ok());
+    }
+
+    #[test]
+    fn test_cache_exists_not_a_dir() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
+        let response_str = "a";
+        let expected_path_parent = Path::new("/home/user/.ssh/fetch_keys.d/");
+        mock_metadata
+            .expect_is_dir_trait()
+            .return_const(false)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
+    }
+
+    #[test]
+    fn test_cache_dir_does_not_exist() {
+        let mut mock_fs = MockFsTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
+        let response_str = "a";
+        let expected_path_parent = Path::new("/home/user/.ssh/fetch_keys.d/");
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+        mock_fs
+            .expect_create_dir_all()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_write()
+            .with(predicate::eq(cache_path), predicate::eq(response_str))
+            .return_once_st(|_, _| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_set_permissions()
+            .with(
+                predicate::eq(cache_path),
+                predicate::eq(fs::Permissions::from_mode(0o644)),
+            )
+            .return_once_st(|_, _| Ok(()))
+            .times(1);
+        assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_ok());
+    }
+
+    #[test]
+    fn test_cache_dir_does_not_exist_could_not_create() {
+        let mut mock_fs = MockFsTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
+        let response_str = "a";
+        let expected_path_parent = Path::new("/home/user/.ssh/fetch_keys.d/");
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+        mock_fs
+            .expect_create_dir_all()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+        assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
+    }
+
+    #[test]
+    fn test_cache_dir_could_not_write() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
+        let response_str = "a";
+        let expected_path_parent = Path::new("/home/user/.ssh/fetch_keys.d/");
+        mock_metadata
+            .expect_is_dir_trait()
+            .return_const(true)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        mock_fs
+            .expect_write()
+            .with(predicate::eq(cache_path), predicate::eq(response_str))
+            .return_once_st(|_, _| Err(anyhow!("")))
+            .times(1);
+        assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
+    }
+
+    #[test]
+    fn test_could_not_set_permissions() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
+        let response_str = "a";
+        let expected_path_parent = Path::new("/home/user/.ssh/fetch_keys.d/");
+        mock_metadata
+            .expect_is_dir_trait()
+            .return_const(true)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_path_parent))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        mock_fs
+            .expect_write()
+            .with(predicate::eq(cache_path), predicate::eq(response_str))
+            .return_once_st(|_, _| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_set_permissions()
+            .with(
+                predicate::eq(cache_path),
+                predicate::eq(fs::Permissions::from_mode(0o644)),
+            )
+            .return_once_st(|_, _| Err(anyhow!("")))
+            .times(1);
+        assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
+    }
+}
