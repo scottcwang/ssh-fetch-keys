@@ -968,3 +968,55 @@ mod tests_is_cache_fresh {
         assert!(is_cache_fresh(Box::new(mock_metadata), 60).unwrap());
     }
 }
+
+#[cfg(test)]
+mod tests_construct_url {
+    use super::*;
+    use anyhow::anyhow;
+
+    fn prepare_construct_url_test(
+        source_defs_map_pairs: Vec<(&str, &str)>,
+        line_tokens_str: &str,
+        expected_result_url: Result<&str>,
+    ) {
+        let source_defs_map: HashMap<String, String> = source_defs_map_pairs
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let line_tokens = line_tokens_str
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+
+        let actual_construct_url_result = construct_url(&source_defs_map, line_tokens);
+
+        match actual_construct_url_result {
+            Ok(actual_construct_url) => {
+                assert_eq!(actual_construct_url, expected_result_url.unwrap());
+            }
+            Err(_) => {
+                assert!(expected_result_url.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn test_undefined_source() {
+        prepare_construct_url_test(vec![], "a b", Err(anyhow!("")));
+    }
+
+    #[test]
+    fn test_correct_parameters() {
+        prepare_construct_url_test(vec![("a", "z{1}{2}")], "a b c", Ok("zbc"));
+    }
+
+    #[test]
+    fn test_too_few_parameters() {
+        prepare_construct_url_test(vec![("a", "z{1}{2}")], "a b", Err(anyhow!("")));
+    }
+
+    #[test]
+    fn test_too_many_parameters() {
+        prepare_construct_url_test(vec![("a", "z{1}{2}{3}")], "a b", Err(anyhow!("")));
+    }
+}
