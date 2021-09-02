@@ -507,10 +507,15 @@ where
         // either there does not exist a fresh cache and the response code is not 200,
         // or there was an error processing the line,
         // then print all stale caches that exist
-        warn!("None of the source definitions provided a recent cached response or a successful request. Using stale caches");
+        warn!("None of the source definitions provided a recent cached response or a successful request");
 
-        for cached_output_entry in cached_output {
-            print_trait.print(&cached_output_entry);
+        if cached_output.len() == 0 {
+            warn!("No usable stale caches were found");
+        } else {
+            warn!("Using stale caches");
+            for cached_output_entry in cached_output {
+                print_trait.print(&cached_output_entry);
+            }
         }
     }
 
