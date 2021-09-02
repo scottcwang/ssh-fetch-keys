@@ -378,15 +378,18 @@ where
     let cache_path = get_cache_filename(&line_tokens, cache_directory);
 
     info!("Looking for a cached response at {:?}", cache_path);
-    let (cached_string, metadata) =
-        ensure_safe_permissions_and_read(&cache_path, Some(user), fs_trait)?;
-    match is_cache_fresh(metadata, cache_stale) {
-        Ok(true) => {
+    match ensure_safe_permissions_and_read(&cache_path, Some(user), fs_trait).and_then(
+        |(cached_string, metadata)| {
+            is_cache_fresh(metadata, cache_stale)
+                .map(|is_cache_fresh_bool| (is_cache_fresh_bool, cached_string))
+        },
+    ) {
+        Ok((true, cached_string)) => {
             info!("Found fresh cached response. Omitting request");
             print!("{}", &cached_string);
             return Ok(Some(cached_string));
         }
-        Ok(false) => {
+        Ok((false, cached_string)) => {
             info!("Cache is stale. Proceeding to make request");
             cached_output.push(cached_string);
         }
