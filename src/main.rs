@@ -1591,3 +1591,23 @@ mod tests_process_user_def_line {
         assert_eq!(actual_cache_vec.len(), 0);
     }
 }
+
+#[cfg(test)]
+mod tests_is_key_in_response_str {
+    use super::*;
+
+    #[test]
+    fn none() {
+        assert!(!is_key_in_response_str(None, "".to_string()));
+    }
+
+    #[test]
+    fn some_no() {
+        assert!(!is_key_in_response_str(Some("a"), "b\nc".to_string()));
+    }
+
+    #[test]
+    fn some_yes() {
+        assert!(is_key_in_response_str(Some("a"), "b\na".to_string()));
+    }
+}
