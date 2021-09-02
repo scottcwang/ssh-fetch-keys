@@ -1632,3 +1632,169 @@ mod tests_is_key_in_response_str {
         assert!(is_key_in_response_str(Some("a"), "b\na".to_string()));
     }
 }
+
+#[cfg(test)]
+mod tests_process_user_defs {
+    use super::*;
+    use anyhow::anyhow;
+    use mockall::predicate;
+
+    #[test]
+    fn found() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let mut mock_print = MockPrintTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/87bb2397-1_2");
+        let response_str = "z";
+        let cache_directory = cache_path.parent().unwrap();
+        mock_metadata
+            .expect_modified_trait()
+            .return_once_st(|| {
+                Ok(time::SystemTime::now()
+                    .checked_sub(time::Duration::from_secs(1))
+                    .unwrap())
+            })
+            .times(1);
+        mock_metadata
+            .expect_uid_trait()
+            .return_const(1000u32)
+            .times(1);
+        mock_metadata
+            .expect_mode_trait()
+            .return_const(0o600u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(cache_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(cache_path))
+            .return_once_st(move |_| Ok(response_str.to_string()))
+            .times(1);
+
+        mock_print
+            .expect_print()
+            .with(predicate::eq(response_str))
+            .return_const(())
+            .times(1);
+
+        assert!(process_user_defs(
+            &User::new(1000u32, "", 0),
+            vec![("1", "{1}")]
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            cache_directory,
+            vec!["1 2".to_string(), "3 4".to_string()],
+            Some(response_str),
+            60,
+            0,
+            &MockHttpClientTrait::new(),
+            &mock_fs,
+            &mock_print,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn only_stale() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_metadata = MockMetadataTrait::new();
+        let mut mock_http_client = MockHttpClientTrait::new();
+        let mut mock_print = MockPrintTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/87bb2397-1_2");
+        let response_str = "z";
+        let cache_directory = cache_path.parent().unwrap();
+        mock_metadata
+            .expect_modified_trait()
+            .return_once_st(|| {
+                Ok(time::SystemTime::now()
+                    .checked_sub(time::Duration::from_secs(60))
+                    .unwrap())
+            })
+            .times(1);
+        mock_metadata
+            .expect_uid_trait()
+            .return_const(1000u32)
+            .times(1);
+        mock_metadata
+            .expect_mode_trait()
+            .return_const(0o600u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(cache_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata)))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(cache_path))
+            .return_once_st(move |_| Ok(response_str.to_string()))
+            .times(1);
+        mock_http_client
+            .expect_request_from_url()
+            .with(predicate::eq("2".to_string()), predicate::eq(1))
+            .return_once_st(move |_, _| Err(anyhow!("")))
+            .times(1);
+
+        mock_print
+            .expect_print()
+            .with(predicate::eq(response_str))
+            .return_const(())
+            .times(1);
+
+        assert!(process_user_defs(
+            &User::new(1000u32, "", 0),
+            vec![("1", "{1}")]
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            cache_directory,
+            vec!["1 2".to_string(), "# comment".to_string()],
+            None,
+            1,
+            1,
+            &mock_http_client,
+            &mock_fs,
+            &mock_print,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn err() {
+        let mut mock_fs = MockFsTrait::new();
+        let mut mock_http_client = MockHttpClientTrait::new();
+        let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/87bb2397-1_2");
+        let cache_directory = cache_path.parent().unwrap();
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(cache_path))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+        mock_http_client
+            .expect_request_from_url()
+            .with(predicate::eq("2".to_string()), predicate::eq(1))
+            .return_once_st(move |_, _| Err(anyhow!("")))
+            .times(1);
+
+        assert!(process_user_defs(
+            &User::new(1000u32, "", 0),
+            vec![("1", "{1}")]
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            cache_directory,
+            vec!["1 2".to_string(), "# comment".to_string()],
+            None,
+            60,
+            1,
+            &mock_http_client,
+            &mock_fs,
+            &MockPrintTrait::new(),
+        )
+        .is_ok());
+    }
+}
