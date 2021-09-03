@@ -21,9 +21,15 @@ use users::switch;
 use users::{User, Users, UsersCache};
 
 #[automock]
-trait SwitchUserGuardTrait {}
+trait SwitchUserGuardTrait {
+    fn drop_trait(&self);
+}
 
-impl SwitchUserGuardTrait for switch::SwitchUserGuard {}
+impl SwitchUserGuardTrait for switch::SwitchUserGuard {
+    fn drop_trait(&self) {
+        drop(self);
+    }
+}
 
 #[automock]
 trait SwitchUserTrait {
@@ -592,7 +598,9 @@ where
     )?;
 
     // Switch user back
-    drop(guard);
+    if let Some(b) = guard {
+        (*b).drop_trait();
+    }
 
     Ok(())
 }
