@@ -1,4 +1,5 @@
 use anyhow::{ensure, Context, Error, Result};
+use clap::{App, Arg, ArgMatches};
 use crc::{Crc, CRC_32_ISO_HDLC};
 use curl::easy::Easy;
 use env_logger::Builder;
@@ -523,6 +524,7 @@ where
 }
 
 fn fetch_print_keys<T, U, V, W>(
+    matches: ArgMatches,
     switch_user_trait: &T,
     http_client_trait: &U,
     fs_trait: &V,
@@ -534,73 +536,6 @@ where
     V: FsTrait,
     W: PrintTrait,
 {
-    // Read command-line arguments
-    let matches = clap::App::new("ssh_fetch_keys")
-        .version("0.1.0")
-        .author("Scott C Wang")
-        .arg(
-            clap::Arg::with_name("username")
-                .help("Username for which to fetch keys")
-                .index(1),
-        )
-        .arg(
-            clap::Arg::with_name("key")
-                .help("Key to look for (will stop once found)")
-                .index(2),
-        )
-        .arg(
-            clap::Arg::with_name("user-defs")
-                .help("Override user definitions file")
-                .long("user-defs")
-                .short("u")
-                .takes_value(true),
-        )
-        .arg(
-            clap::Arg::with_name("source-defs")
-                .help("Override source definitions file")
-                .long("source-defs")
-                .short("s")
-                .takes_value(true),
-        )
-        .arg(
-            clap::Arg::with_name("cache-directory")
-                .help("Override cache directory")
-                .long("cache-directory")
-                .short("c")
-                .takes_value(true),
-        )
-        .arg(
-            clap::Arg::with_name("cache-stale")
-                .help("Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches. Default 60")
-                .long("cache-stale")
-                .takes_value(true)
-        )
-        .arg(
-            clap::Arg::with_name("request-timeout")
-                .help("Timeout for requests in seconds. Default 5")
-                .long("request-timeout")
-                .takes_value(true)
-        )
-        .arg(
-            clap::Arg::with_name("verbosity")
-                .help("Verbosity. Can be given multiple times")
-                .long("verbose")
-                .short("v")
-                .multiple(true)
-        )
-        .get_matches();
-
-    // Set log level
-    let mut builder = Builder::from_default_env();
-    builder.filter_level(match matches.occurrences_of("verbosity") {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    });
-    builder.init();
-
     let mut users_table = UsersCache::new();
     let (user, guard) = switch_user(
         matches.value_of("username"),
@@ -662,8 +597,84 @@ where
     Ok(())
 }
 
+// Read command-line arguments
+fn get_args_app() -> App<'static, 'static> {
+    App::new("ssh_fetch_keys")
+        .version("0.1.0")
+        .author("Scott C Wang")
+        .arg(
+            Arg::with_name("username")
+                .help("Username for which to fetch keys")
+                .index(1),
+        )
+        .arg(
+            Arg::with_name("key")
+                .help("Key to look for (will stop once found)")
+                .index(2),
+        )
+        .arg(
+            Arg::with_name("user-defs")
+                .help("Override user definitions file")
+                .long("user-defs")
+                .short("u")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("source-defs")
+                .help("Override source definitions file")
+                .long("source-defs")
+                .short("s")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("cache-directory")
+                .help("Override cache directory")
+                .long("cache-directory")
+                .short("c")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("cache-stale")
+                .help("Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches. Default 60")
+                .long("cache-stale")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("request-timeout")
+                .help("Timeout for requests in seconds. Default 5")
+                .long("request-timeout")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("verbosity")
+                .help("Verbosity. Can be given multiple times")
+                .long("verbose")
+                .short("v")
+                .multiple(true)
+        )
+}
+
 fn main() {
-    if let Err(e) = fetch_print_keys(&SwitchUser {}, &CurlHttpClient {}, &StdFs {}, &StdOut {}) {
+    let matches = get_args_app().get_matches();
+
+    // Set log level
+    let mut builder = Builder::from_default_env();
+    builder.filter_level(match matches.occurrences_of("verbosity") {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    });
+    builder.init();
+
+    if let Err(e) = fetch_print_keys(
+        matches,
+        &SwitchUser {},
+        &CurlHttpClient {},
+        &StdFs {},
+        &StdOut {},
+    ) {
         error!("{:?}", e.context("Exiting"));
         process::exit(1);
     };
