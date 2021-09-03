@@ -56,7 +56,7 @@ impl SwitchUserTrait for SwitchUser {
 // Switches the effective uid to the given user
 fn switch_user<T, U>(
     user_name_option: Option<&str>,
-    user_table: &mut T,
+    user_table: &T,
     switch_user_trait: &U,
 ) -> Result<(User, Option<Box<dyn SwitchUserGuardTrait>>)>
 where
@@ -529,25 +529,22 @@ where
     Ok(())
 }
 
-fn fetch_print_keys<T, U, V, W>(
+fn fetch_print_keys<T, U, V, W, X>(
     matches: ArgMatches,
-    switch_user_trait: &T,
-    http_client_trait: &U,
-    fs_trait: &V,
-    print_trait: &W,
+    users_table: &T,
+    switch_user_trait: &U,
+    http_client_trait: &V,
+    fs_trait: &W,
+    print_trait: &X,
 ) -> Result<()>
 where
-    T: SwitchUserTrait,
-    U: HttpClientTrait,
-    V: FsTrait,
-    W: PrintTrait,
+    T: Users,
+    U: SwitchUserTrait,
+    V: HttpClientTrait,
+    W: FsTrait,
+    X: PrintTrait,
 {
-    let mut users_table = UsersCache::new();
-    let (user, guard) = switch_user(
-        matches.value_of("username"),
-        &mut users_table,
-        switch_user_trait,
-    )?;
+    let (user, guard) = switch_user(matches.value_of("username"), users_table, switch_user_trait)?;
 
     process_user_defs(
         &user,
@@ -678,6 +675,7 @@ fn main() {
 
     if let Err(e) = fetch_print_keys(
         matches,
+        &mut UsersCache::new(),
         &SwitchUser {},
         &CurlHttpClient {},
         &StdFs {},
