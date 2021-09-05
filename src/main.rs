@@ -1815,3 +1815,293 @@ mod tests_process_user_defs {
         .is_ok());
     }
 }
+
+#[cfg(test)]
+mod tests_fetch_print_keys {
+    use super::*;
+    use anyhow::anyhow;
+    use mockall::predicate;
+    use users::mock::MockUsers;
+    use users::User;
+
+    #[test]
+    fn cannot_switch_user() {
+        let root_user = User::new(0, "root", 0);
+
+        let mut user_table = MockUsers::with_current_uid(root_user.uid());
+        user_table.add_user(root_user);
+
+        let matches = get_args_app().get_matches_from(vec!["", "test_user"]);
+
+        assert!(fetch_print_keys(
+            matches,
+            &user_table,
+            &MockSwitchUserTrait::new(),
+            &MockHttpClientTrait::new(),
+            &MockFsTrait::new(),
+            &MockPrintTrait::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn defaults() {
+        let expected_user_uid = 1000;
+        let expected_user_gid = 1000;
+        let expected_user_name = "test_user";
+        let expected_user = User::new(expected_user_uid, expected_user_name, expected_user_gid)
+            .with_home_dir("/home/test_user");
+
+        let root_user = User::new(0, "root", 0);
+
+        let mut user_table = MockUsers::with_current_uid(expected_user_uid);
+        user_table.add_user(expected_user);
+        user_table.add_user(root_user);
+
+        let mut mock_fs = MockFsTrait::new();
+
+        let mut mock_metadata_source_defs = MockMetadataTrait::new();
+        let source_defs_path = Path::new("/etc/ssh/fetch_keys.conf");
+        mock_metadata_source_defs
+            .expect_uid_trait()
+            .return_const(0u32)
+            .times(1);
+        mock_metadata_source_defs
+            .expect_mode_trait()
+            .return_const(0o644u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(source_defs_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata_source_defs)))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(source_defs_path))
+            .return_once_st(move |_| Ok("1 {1}".to_string()))
+            .times(1);
+
+        let mut mock_metadata_cache_directory = MockMetadataTrait::new();
+        let expected_cache_path = Path::new("/home/test_user/.ssh/fetch_keys.d/87bb2397-1_2");
+        let cache_directory_path = expected_cache_path.parent().unwrap();
+        mock_metadata_cache_directory
+            .expect_is_dir_trait()
+            .return_const(true)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(cache_directory_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata_cache_directory)))
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_cache_path))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+
+        let mut mock_metadata_user_defs = MockMetadataTrait::new();
+        let user_defs_path = Path::new("/home/test_user/.ssh/fetch_keys");
+        mock_metadata_user_defs
+            .expect_uid_trait()
+            .return_const(expected_user_uid)
+            .times(1);
+        mock_metadata_user_defs
+            .expect_mode_trait()
+            .return_const(0o644u32)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(user_defs_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata_user_defs)))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(user_defs_path))
+            .return_once_st(move |_| Ok("1 2".to_string()))
+            .times(1);
+
+        let response_str = "z";
+        let mut mock_http_client = MockHttpClientTrait::new();
+        mock_http_client
+            .expect_request_from_url()
+            .with(predicate::eq("2".to_string()), predicate::eq(5))
+            .return_once_st(move |_, _| Ok(response_str.to_string()))
+            .times(1);
+
+        mock_fs
+            .expect_write()
+            .with(
+                predicate::eq(expected_cache_path),
+                predicate::eq(response_str),
+            )
+            .return_once_st(move |_, _| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_set_permissions()
+            .with(
+                predicate::eq(expected_cache_path),
+                predicate::eq(fs::Permissions::from_mode(0o644)),
+            )
+            .return_once_st(move |_, _| Ok(()))
+            .times(1);
+
+        let mut mock_print = MockPrintTrait::new();
+        mock_print
+            .expect_print()
+            .with(predicate::eq(response_str))
+            .return_const(())
+            .times(1);
+
+        let matches = get_args_app().get_matches_from(vec![""]);
+
+        assert!(fetch_print_keys(
+            matches,
+            &user_table,
+            &MockSwitchUserTrait::new(),
+            &mock_http_client,
+            &mock_fs,
+            &mock_print,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn all_args_specified() {
+        let user_defs = "/tmp/user_defs";
+        let source_defs = "/tmp/source_defs";
+        let cache_directory = "/tmp/cache_directory";
+        let request_timeout = 15;
+
+        let mut mock_switch_user_guard = MockSwitchUserGuardTrait::new();
+        mock_switch_user_guard
+            .expect_drop_trait()
+            .return_const(())
+            .times(1);
+
+        let expected_user_uid = 1000;
+        let expected_user_gid = 1000;
+        let expected_user_name = "test_user";
+        let expected_user = User::new(expected_user_uid, expected_user_name, expected_user_gid)
+            .with_home_dir("/home/test_user");
+
+        let root_user = User::new(0, "root", 0);
+
+        let mut mock_switch_user = MockSwitchUserTrait::new();
+        mock_switch_user
+            .expect_switch_user_group()
+            .withf(move |uid, gid| *uid == expected_user_uid && *gid == expected_user_gid)
+            .return_once_st(|_, _| {
+                Ok(Box::new(mock_switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
+            })
+            .times(1);
+
+        let mut user_table = MockUsers::with_current_uid(root_user.uid());
+        user_table.add_user(expected_user);
+        user_table.add_user(root_user);
+
+        let mut mock_fs = MockFsTrait::new();
+
+        let source_defs_path = Path::new(source_defs);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(source_defs_path))
+            .return_once_st(|_| Ok(Box::new(MockMetadataTrait::new())))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(source_defs_path))
+            .return_once_st(move |_| Ok("1 {1}".to_string()))
+            .times(1);
+
+        let mut mock_metadata_cache_directory = MockMetadataTrait::new();
+        let expected_cache_path = Path::new("/tmp/cache_directory/87bb2397-1_2");
+        let cache_directory_path = expected_cache_path.parent().unwrap();
+        mock_metadata_cache_directory
+            .expect_is_dir_trait()
+            .return_const(true)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(cache_directory_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata_cache_directory)))
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_cache_path))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+
+        let user_defs_path = Path::new(user_defs);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(user_defs_path))
+            .return_once_st(|_| Ok(Box::new(MockMetadataTrait::new())))
+            .times(1);
+        mock_fs
+            .expect_read_to_string()
+            .with(predicate::eq(user_defs_path))
+            .return_once_st(move |_| Ok("1 2".to_string()))
+            .times(1);
+
+        let response_str = "z";
+        let mut mock_http_client = MockHttpClientTrait::new();
+        mock_http_client
+            .expect_request_from_url()
+            .with(
+                predicate::eq("2".to_string()),
+                predicate::eq(request_timeout),
+            )
+            .return_once_st(move |_, _| Ok(response_str.to_string()))
+            .times(1);
+
+        mock_fs
+            .expect_write()
+            .with(
+                predicate::eq(expected_cache_path),
+                predicate::eq(response_str),
+            )
+            .return_once_st(move |_, _| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_set_permissions()
+            .with(
+                predicate::eq(expected_cache_path),
+                predicate::eq(fs::Permissions::from_mode(0o644)),
+            )
+            .return_once_st(move |_, _| Ok(()))
+            .times(1);
+
+        let mut mock_print = MockPrintTrait::new();
+        mock_print
+            .expect_print()
+            .with(predicate::eq(response_str))
+            .return_const(())
+            .times(1);
+
+        let matches = get_args_app().get_matches_from(vec![
+            "",
+            "test_user",
+            response_str,
+            "--user-defs",
+            user_defs,
+            "--source-defs",
+            source_defs,
+            "--cache-directory",
+            cache_directory,
+            "--cache-stale",
+            "5",
+            "--request-timeout",
+            &request_timeout.to_string(),
+        ]);
+
+        assert!(fetch_print_keys(
+            matches,
+            &user_table,
+            &mock_switch_user,
+            &mock_http_client,
+            &mock_fs,
+            &mock_print,
+        )
+        .is_ok());
+    }
+}
