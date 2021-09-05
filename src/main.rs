@@ -179,8 +179,9 @@ where
             metadata.mode_trait() & 0o022 == 0,
             format!("{:?} is writable by group or world", path)
         );
+        info!("{:?} has correct permissions", path);
     }
-    info!("{:?} has correct permissions. Reading", path);
+    info!("Reading {:?}", path);
     fs_trait
         .read_to_string(path)
         .context(format!("Could not read {:?}", path))
