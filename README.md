@@ -13,40 +13,30 @@ sudo docker run \
     --interactive \
     --tty \
     --volume $(pwd)/ssh-fetch-keys:/home/rust/src \
-    ekidd/rust-musl-builder \
+    ekidd/rust-musl-builder:z \
         cargo build --release
-sudo install ./ssh-fetch-keys/target/x86_64-unknown-linux-musl/release/ssh-fetch-keys /bin
+sudo install \
+    ./ssh-fetch-keys/target/x86_64-unknown-linux-musl/release/ssh-fetch-keys \
+    /bin
 
-# root is required because ssh-fetch-keys needs to seteuid to the user who is trying to authenticate
-sudo tee /etc/ssh/sshd_config.d/01-authorizedkeyscommand.conf <<EOF
-AuthorizedKeysCommand /bin/ssh-fetch-keys %u %k
-AuthorizedKeysCommandUser root
-EOF
+sudo install \
+    -D \
+    --mode=644 \
+    --target-directory=/etc/ssh/sshd_config.d \
+    ./ssh-fetch-keys/conf/01-ssh-fetch-keys.conf
 
-# Add URL templates here. Tokens {1}, {2}, etc. will be replaced by the user-specified parameters to form the request URL
-sudo tee /etc/ssh/fetch_keys.conf << EOF
-github https://github.com/{1}.keys
-EOF
+sudo install \
+    -D \
+    --mode=644 \
+    --target-directory=/etc/ssh \
+    ./ssh-fetch-keys/conf/fetch_keys.conf
 
-# Make SELinux allow sshd to call ssh-fetch-keys
 TEMP_DIR_SELINUX_SSHD=$(mktemp --directory)
-sudo tee ${TEMP_DIR_SELINUX_SSHD}/ssh-fetch-keys.te << EOF
-module ssh-fetch-keys 1.0;
-
-require {
-	type sshd_t;
-	type http_port_t;
-	class tcp_socket name_connect;
-}
-
-allow sshd_t http_port_t:tcp_socket name_connect;
-EOF
-
 sudo checkmodule \
     --mls \
     -m \
     --output ${TEMP_DIR_SELINUX_SSHD}/ssh-fetch-keys.mod \
-    ${TEMP_DIR_SELINUX_SSHD}/ssh-fetch-keys.te
+    ./ssh-fetch-keys/conf/ssh-fetch-keys.te
 sudo semodule_package \
     --module ${TEMP_DIR_SELINUX_SSHD}/ssh-fetch-keys.mod \
     --outfile ${TEMP_DIR_SELINUX_SSHD}/ssh-fetch-keys.pp
