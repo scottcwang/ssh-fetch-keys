@@ -1,8 +1,13 @@
 [package]
 name = "ssh-fetch-keys"
+description = "An AuthorizedKeysCommand for openssh that retrieves and caches your public keys from online accounts such as GitHub"
+repository = "https://github.com/scottcwang/ssh-fetch-keys/"
 version = "0.1.0"
 authors = ["Scott C Wang <wangsc@cs.wisc.edu>"]
 edition = "2018"
+license = "MIT"
+keywords = ["ssh", "key"]
+categories = ["caching", "authentication", "cryptography", "network-programming", "config"]
 
 [dependencies]
 users = "0.11"
