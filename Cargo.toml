@@ -2,7 +2,7 @@
 name = "ssh-fetch-keys"
 description = "An AuthorizedKeysCommand for openssh that retrieves and caches your public keys from online accounts such as GitHub"
 repository = "https://github.com/scottcwang/ssh-fetch-keys/"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Scott C Wang <wangsc@cs.wisc.edu>"]
 edition = "2018"
 license = "MIT"
