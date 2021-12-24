@@ -1,5 +1,8 @@
 use anyhow::{ensure, Context, Error, Result};
-use clap::{App, Arg, ArgMatches};
+use clap::{
+    app_from_crate, crate_authors, crate_description, crate_name, crate_version, App, Arg,
+    ArgMatches,
+};
 use crc::{Crc, CRC_32_ISO_HDLC};
 use curl::easy::Easy;
 use env_logger::Builder;
@@ -616,17 +619,15 @@ where
 
 // Read command-line arguments
 fn get_args_app() -> App<'static, 'static> {
-    App::new("ssh_fetch_keys")
-        .version("0.1.0")
-        .author("Scott C Wang")
+    app_from_crate!()
         .arg(
             Arg::with_name("username")
-                .help("Username for which to fetch keys")
+                .help("Username for which to fetch keys. If not specified, defaults to the user that owns this process. When specifying this program for the AuthorizedKeysCommand in sshd_config, use the token %u, which sshd will substitute with the username of the user who is requesting to authenticate")
                 .index(1),
         )
         .arg(
             Arg::with_name("key")
-                .help("Key to look for (will stop once found)")
+                .help("Key to look for (will stop once found). Optional. When specifying this program for the AuthorizedKeysCommand in sshd_config, use the token %k, which sshd will substitute with the public key sent by the client")
                 .index(2),
         )
         .arg(
@@ -634,47 +635,54 @@ fn get_args_app() -> App<'static, 'static> {
                 .help("Override user definition string. Takes precedence over --user-defs")
                 .long("override-user-def")
                 .short("U")
-                .takes_value(true),
+                .takes_value(true)
+                .display_order(1),
         )
         .arg(
             Arg::with_name("user-defs")
-                .help("Override user definitions file")
+                .help("User definitions file path. Defaults to ~<username>/.ssh/fetch_keys")
                 .long("user-defs")
                 .short("u")
-                .takes_value(true),
+                .takes_value(true)
+                .display_order(2),
         )
         .arg(
             Arg::with_name("override-source-def")
                 .help("Override source definition string. Takes precedence over --source-defs")
                 .long("override-source-def")
                 .short("S")
-                .takes_value(true),
+                .takes_value(true)
+                .display_order(3),
         )
         .arg(
             Arg::with_name("source-defs")
-                .help("Override source definitions file")
+                .help("Source definitions file path. Defaults to /etc/ssh/fetch_keys.conf")
                 .long("source-defs")
                 .short("s")
-                .takes_value(true),
+                .takes_value(true)
+                .display_order(4),
         )
         .arg(
             Arg::with_name("cache-directory")
-                .help("Override cache directory")
+                .help("Cache directory path. Defaults to ~<username>/.ssh/fetch_keys.d/")
                 .long("cache-directory")
                 .short("c")
-                .takes_value(true),
+                .takes_value(true)
+                .display_order(5),
         )
         .arg(
             Arg::with_name("cache-stale")
                 .help("Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches. Default 60")
                 .long("cache-stale")
                 .takes_value(true)
+                .display_order(6),
         )
         .arg(
             Arg::with_name("request-timeout")
                 .help("Timeout for requests in seconds. Default 5")
                 .long("request-timeout")
                 .takes_value(true)
+                .display_order(7),
         )
         .arg(
             Arg::with_name("verbosity")
