@@ -550,42 +550,53 @@ where
     process_user_defs(
         &user,
         {
-            let (source_defs_path, user_option) = match matches.value_of("source-defs") {
-                Some(override_path) => (Path::new(override_path), None),
-                None => (
-                    Path::new("/etc/ssh/fetch_keys.conf"),
-                    Some(
-                        users_table
-                            .get_user_by_uid(0)
-                            .context("Couldn't get root user")?
-                            .as_ref()
-                            .clone(),
-                    ),
-                ),
-            };
-            info!("Looking for source definitions at {:?}", source_defs_path);
-            get_source_defs(
-                &ensure_safe_permissions_and_read(
-                    source_defs_path,
-                    user_option.as_ref(),
-                    fs_trait,
-                )?
-                .0,
-            )
+            match matches.value_of("override-source-def") {
+                Some(override_source_def) => get_source_defs(override_source_def),
+                None => {
+                    let (source_defs_path, user_option) = match matches.value_of("source-defs") {
+                        Some(override_path) => (Path::new(override_path), None),
+                        None => (
+                            Path::new("/etc/ssh/fetch_keys.conf"),
+                            Some(
+                                users_table
+                                    .get_user_by_uid(0)
+                                    .context("Couldn't get root user")?
+                                    .as_ref()
+                                    .clone(),
+                            ),
+                        ),
+                    };
+                    info!("Looking for source definitions at {:?}", source_defs_path);
+                    get_source_defs(
+                        &ensure_safe_permissions_and_read(
+                            source_defs_path,
+                            user_option.as_ref(),
+                            fs_trait,
+                        )?
+                        .0,
+                    )
+                }
+            }
         }?,
         &match matches.value_of("cache-directory") {
             Some(override_path) => PathBuf::from(override_path),
             None => user.home_dir().join(".ssh/fetch_keys.d"),
         },
         {
-            let (user_defs_path, user_option) = match matches.value_of("user-defs") {
-                Some(override_path) => (PathBuf::from(override_path), None),
-                None => (user.home_dir().join(".ssh/fetch_keys"), Some(&user)),
-            };
-            info!("Looking for user definitions at {:?}", user_defs_path);
-            get_user_defs(
-                &ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)?.0,
-            )
+            match matches.value_of("override-user-def") {
+                Some(override_user_def) => get_user_defs(override_user_def),
+                None => {
+                    let (user_defs_path, user_option) = match matches.value_of("user-defs") {
+                        Some(override_path) => (PathBuf::from(override_path), None),
+                        None => (user.home_dir().join(".ssh/fetch_keys"), Some(&user)),
+                    };
+                    info!("Looking for user definitions at {:?}", user_defs_path);
+                    get_user_defs(
+                        &ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)?
+                            .0,
+                    )
+                }
+            }
         },
         matches.value_of("key"),
         matches.value_of("cache-stale").unwrap_or("60").parse()?,
@@ -619,10 +630,24 @@ fn get_args_app() -> App<'static, 'static> {
                 .index(2),
         )
         .arg(
+            Arg::with_name("override-user-def")
+                .help("Override user definition string. Takes precedence over --user-defs")
+                .long("override-user-def")
+                .short("U")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("user-defs")
                 .help("Override user definitions file")
                 .long("user-defs")
                 .short("u")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("override-source-def")
+                .help("Override source definition string. Takes precedence over --source-defs")
+                .long("override-source-def")
+                .short("S")
                 .takes_value(true),
         )
         .arg(
@@ -1967,7 +1992,126 @@ mod tests_fetch_print_keys {
     }
 
     #[test]
-    fn all_args_specified() {
+    fn all_args_specified_including_override_strings() {
+        let user_defs = "/tmp/user_defs";
+        let source_defs = "/tmp/source_defs";
+        let cache_directory = "/tmp/cache_directory";
+        let request_timeout = 15;
+
+        let mut mock_switch_user_guard = MockSwitchUserGuardTrait::new();
+        mock_switch_user_guard
+            .expect_drop_trait()
+            .return_const(())
+            .times(1);
+
+        let expected_user_uid = 1000;
+        let expected_user_gid = 1000;
+        let expected_user_name = "test_user";
+        let expected_user = User::new(expected_user_uid, expected_user_name, expected_user_gid)
+            .with_home_dir("/home/test_user");
+
+        let root_user = User::new(0, "root", 0);
+
+        let mut mock_switch_user = MockSwitchUserTrait::new();
+        mock_switch_user
+            .expect_switch_user_group()
+            .withf(move |uid, gid| *uid == expected_user_uid && *gid == expected_user_gid)
+            .return_once_st(|_, _| {
+                Ok(Box::new(mock_switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
+            })
+            .times(1);
+
+        let mut user_table = MockUsers::with_current_uid(root_user.uid());
+        user_table.add_user(expected_user);
+        user_table.add_user(root_user);
+
+        let mut mock_fs = MockFsTrait::new();
+
+        let mut mock_metadata_cache_directory = MockMetadataTrait::new();
+        let expected_cache_path = Path::new("/tmp/cache_directory/87bb2397-1_2");
+        let cache_directory_path = expected_cache_path.parent().unwrap();
+        mock_metadata_cache_directory
+            .expect_is_dir_trait()
+            .return_const(true)
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(cache_directory_path))
+            .return_once_st(|_| Ok(Box::new(mock_metadata_cache_directory)))
+            .times(1);
+        mock_fs
+            .expect_metadata()
+            .with(predicate::eq(expected_cache_path))
+            .return_once_st(|_| Err(anyhow!("")))
+            .times(1);
+
+        let response_str = "z";
+        let mut mock_http_client = MockHttpClientTrait::new();
+        mock_http_client
+            .expect_request_from_url()
+            .with(
+                predicate::eq("2".to_string()),
+                predicate::eq(request_timeout),
+            )
+            .return_once_st(move |_, _| Ok(response_str.to_string()))
+            .times(1);
+
+        mock_fs
+            .expect_write()
+            .with(
+                predicate::eq(expected_cache_path),
+                predicate::eq(response_str),
+            )
+            .return_once_st(move |_, _| Ok(()))
+            .times(1);
+        mock_fs
+            .expect_set_permissions()
+            .with(
+                predicate::eq(expected_cache_path),
+                predicate::eq(fs::Permissions::from_mode(0o644)),
+            )
+            .return_once_st(move |_, _| Ok(()))
+            .times(1);
+
+        let mut mock_print = MockPrintTrait::new();
+        mock_print
+            .expect_print()
+            .with(predicate::eq(response_str))
+            .return_const(())
+            .times(1);
+
+        let matches = get_args_app().get_matches_from(vec![
+            "",
+            "test_user",
+            response_str,
+            "--override-user-def",
+            "1 2",
+            "--user-defs",
+            user_defs,
+            "--override-source-def",
+            "1 {1}",
+            "--source-defs",
+            source_defs,
+            "--cache-directory",
+            cache_directory,
+            "--cache-stale",
+            "5",
+            "--request-timeout",
+            &request_timeout.to_string(),
+        ]);
+
+        assert!(fetch_print_keys(
+            matches,
+            &user_table,
+            &mock_switch_user,
+            &mock_http_client,
+            &mock_fs,
+            &mock_print,
+        )
+        .is_ok());
+    }
+    #[test]
+    fn all_args_specified_except_override_string() {
         let user_defs = "/tmp/user_defs";
         let source_defs = "/tmp/source_defs";
         let cache_directory = "/tmp/cache_directory";
