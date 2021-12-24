@@ -125,7 +125,7 @@ When a client authenticates to the remote destination, the remote destination's 
 
 In this way, clients need only maintain their user definitions in a single location, viz. `~username/.ssh/fetch_keys` on the mirror server; `ssh-fetch-keys` relays their public keys from the mirror server to any remote destination the client authenticates to.
 
-Alternatively, the mirror server can be constructed to obtain the client's public keys from their `~username/ssh/authorized_keys`, a database, or a directory service.
+Alternatively, the mirror server can be constructed to obtain the client's public keys from their `~username/.ssh/authorized_keys`, a database, or a directory service.
 
 ## Changelog
 
