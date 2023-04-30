@@ -433,7 +433,7 @@ where
 // Returns true if the given key, if Some, is present in the given response string
 fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String) -> bool {
     match key_to_find_option {
-        Some(key_to_find) => response_str.lines().any(|line| line.ends_with(key_to_find)),
+        Some(key_to_find) => response_str.lines().any(|line| line.contains(key_to_find)),
         None => false,
     }
 }
@@ -1635,8 +1635,13 @@ mod tests_is_key_in_response_str {
     }
 
     #[test]
-    fn some_yes() {
+    fn some_yes_end() {
         assert!(is_key_in_response_str(Some("a"), "b\na".to_string()));
+    }
+
+    #[test]
+    fn some_yes_middle() {
+        assert!(is_key_in_response_str(Some("b"), "ab\nc".to_string()));
     }
 }
 
