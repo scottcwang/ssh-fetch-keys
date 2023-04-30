@@ -12,8 +12,9 @@ sudo docker run \
     --rm \
     --interactive \
     --tty \
-    --volume $(pwd)/ssh-fetch-keys:/home/rust/src \
-    ekidd/rust-musl-builder:z \
+    --volume $(pwd)/ssh-fetch-keys:/usr/src/ssh-fetch-keys:Z \
+    --workdir /usr/src/ssh-fetch-keys \
+    docker.io/rust \
         cargo build --release
 sudo install \
     ./ssh-fetch-keys/target/x86_64-unknown-linux-musl/release/ssh-fetch-keys \
