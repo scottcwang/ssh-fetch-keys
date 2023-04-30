@@ -4,7 +4,7 @@ use crc::{Crc, CRC_32_ISO_HDLC};
 use curl::easy::Easy;
 use env_logger::Builder;
 use lazy_static::lazy_static;
-use log::{error, info, warn, LevelFilter};
+use log::{error, info, warn};
 use mockall::automock;
 use regex::{Captures, Regex};
 use std::collections::HashMap;
@@ -567,9 +567,8 @@ struct Args {
     #[arg(long="request-timeout", default_value_t=5)]
     request_timeout: u64,
 
-    /// Verbosity. Can be given multiple times
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
+    #[clap(flatten)]
+    verbose: clap_verbosity_flag::Verbosity,
 }
 
 fn fetch_print_keys<T, U, V, W, X>(
@@ -660,15 +659,9 @@ fn main() {
     let args = Args::parse();
 
     // Set log level
-    let mut builder = Builder::from_default_env();
-    builder.filter_level(match args.verbose {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    });
-    builder.init();
+    Builder::from_default_env()
+        .filter_level(args.verbose.log_level_filter())
+        .init();
 
     if let Err(e) = fetch_print_keys(
         args,
