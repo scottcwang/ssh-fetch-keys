@@ -559,11 +559,11 @@ struct Args {
     #[arg(short='c', long="cache-directory")]
     cache_directory: Option<String>,
 
-    /// Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches. Default 60
+    /// Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches
     #[arg(long="cache-stale", default_value_t=60)]
     cache_stale: u64,
 
-    /// Timeout for requests in seconds. Default 5
+    /// Timeout for requests in seconds
     #[arg(long="request-timeout", default_value_t=5)]
     request_timeout: u64,
 
