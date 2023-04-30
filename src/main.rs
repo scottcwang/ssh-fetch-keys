@@ -1,8 +1,5 @@
 use anyhow::{ensure, Context, Error, Result};
-use clap::{
-    app_from_crate, crate_authors, crate_description, crate_name, crate_version, App, Arg,
-    ArgMatches,
-};
+use clap::Parser;
 use crc::{Crc, CRC_32_ISO_HDLC};
 use curl::easy::Easy;
 use env_logger::Builder;
@@ -533,8 +530,50 @@ where
     Ok(())
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Username for which to fetch keys. If not specified, defaults to the user that owns this process. When specifying this program for the AuthorizedKeysCommand in sshd_config, use the token %u, which sshd will substitute with the username of the user who is requesting to authenticate
+    username: Option<String>,
+
+    /// Key to look for (will stop once found). Optional. When specifying this program for the AuthorizedKeysCommand in sshd_config, use the token %k, which sshd will substitute with the public key sent by the client
+    key: Option<String>,
+
+    /// Override user definition string. Takes precedence over --user-defs
+    #[arg(short='U', long="override-user-def")]
+    override_user_def: Option<String>,
+
+    /// User definitions file path. Defaults to ~<username>/.ssh/fetch_keys
+    #[arg(short='u', long="user-defs")]
+    user_defs: Option<String>,
+
+    /// Override source definition string. Takes precedence over --source-defs
+    #[arg(short='S', long="override-source-def")]
+    override_source_def: Option<String>,
+
+    /// Source definitions file path. Defaults to /etc/ssh/fetch_keys.conf
+    #[arg(short='s', long="source-defs")]
+    source_defs: Option<String>,
+
+    /// Cache directory path. Defaults to ~<username>/.ssh/fetch_keys.d/
+    #[arg(short='c', long="cache-directory")]
+    cache_directory: Option<String>,
+
+    /// Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches. Default 60
+    #[arg(long="cache-stale", default_value_t=60)]
+    cache_stale: u64,
+
+    /// Timeout for requests in seconds. Default 5
+    #[arg(long="request-timeout", default_value_t=5)]
+    request_timeout: u64,
+
+    /// Verbosity. Can be given multiple times
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
 fn fetch_print_keys<T, U, V, W, X>(
-    matches: ArgMatches,
+    args: Args,
     users_table: &T,
     switch_user_trait: &U,
     http_client_trait: &V,
@@ -548,18 +587,18 @@ where
     W: FsTrait,
     X: PrintTrait,
 {
-    let (user, guard) = switch_user(matches.value_of("username"), users_table, switch_user_trait)?;
+    let (user, guard) = switch_user(args.username.as_deref(), users_table, switch_user_trait)?;
 
     process_user_defs(
         &user,
         {
-            match matches.value_of("override-source-def") {
-                Some(override_source_def) => get_source_defs(override_source_def),
+            match args.override_source_def {
+                Some(override_source_def) => get_source_defs(&override_source_def),
                 None => {
-                    let (source_defs_path, user_option) = match matches.value_of("source-defs") {
-                        Some(override_path) => (Path::new(override_path), None),
+                    let (source_defs_path, user_option) = match args.source_defs {
+                        Some(override_path) => (PathBuf::from(override_path), None),
                         None => (
-                            Path::new("/etc/ssh/fetch_keys.conf"),
+                            PathBuf::from("/etc/ssh/fetch_keys.conf"),
                             Some(
                                 users_table
                                     .get_user_by_uid(0)
@@ -572,7 +611,7 @@ where
                     info!("Looking for source definitions at {:?}", source_defs_path);
                     get_source_defs(
                         &ensure_safe_permissions_and_read(
-                            source_defs_path,
+                            &source_defs_path,
                             user_option.as_ref(),
                             fs_trait,
                         )?
@@ -581,15 +620,15 @@ where
                 }
             }
         }?,
-        &match matches.value_of("cache-directory") {
+        &match args.cache_directory {
             Some(override_path) => PathBuf::from(override_path),
             None => user.home_dir().join(".ssh/fetch_keys.d"),
         },
         {
-            match matches.value_of("override-user-def") {
-                Some(override_user_def) => get_user_defs(override_user_def),
+            match args.override_user_def {
+                Some(override_user_def) => get_user_defs(&override_user_def),
                 None => {
-                    let (user_defs_path, user_option) = match matches.value_of("user-defs") {
+                    let (user_defs_path, user_option) = match args.user_defs {
                         Some(override_path) => (PathBuf::from(override_path), None),
                         None => (user.home_dir().join(".ssh/fetch_keys"), Some(&user)),
                     };
@@ -601,9 +640,9 @@ where
                 }
             }
         },
-        matches.value_of("key"),
-        matches.value_of("cache-stale").unwrap_or("60").parse()?,
-        matches.value_of("request-timeout").unwrap_or("5").parse()?,
+        args.key.as_deref(),
+        args.cache_stale,
+        args.request_timeout,
         http_client_trait,
         fs_trait,
         print_trait,
@@ -617,88 +656,12 @@ where
     Ok(())
 }
 
-// Read command-line arguments
-fn get_args_app() -> App<'static, 'static> {
-    app_from_crate!()
-        .arg(
-            Arg::with_name("username")
-                .help("Username for which to fetch keys. If not specified, defaults to the user that owns this process. When specifying this program for the AuthorizedKeysCommand in sshd_config, use the token %u, which sshd will substitute with the username of the user who is requesting to authenticate")
-                .index(1),
-        )
-        .arg(
-            Arg::with_name("key")
-                .help("Key to look for (will stop once found). Optional. When specifying this program for the AuthorizedKeysCommand in sshd_config, use the token %k, which sshd will substitute with the public key sent by the client")
-                .index(2),
-        )
-        .arg(
-            Arg::with_name("override-user-def")
-                .help("Override user definition string. Takes precedence over --user-defs")
-                .long("override-user-def")
-                .short("U")
-                .takes_value(true)
-                .display_order(1),
-        )
-        .arg(
-            Arg::with_name("user-defs")
-                .help("User definitions file path. Defaults to ~<username>/.ssh/fetch_keys")
-                .long("user-defs")
-                .short("u")
-                .takes_value(true)
-                .display_order(2),
-        )
-        .arg(
-            Arg::with_name("override-source-def")
-                .help("Override source definition string. Takes precedence over --source-defs")
-                .long("override-source-def")
-                .short("S")
-                .takes_value(true)
-                .display_order(3),
-        )
-        .arg(
-            Arg::with_name("source-defs")
-                .help("Source definitions file path. Defaults to /etc/ssh/fetch_keys.conf")
-                .long("source-defs")
-                .short("s")
-                .takes_value(true)
-                .display_order(4),
-        )
-        .arg(
-            Arg::with_name("cache-directory")
-                .help("Cache directory path. Defaults to ~<username>/.ssh/fetch_keys.d/")
-                .long("cache-directory")
-                .short("c")
-                .takes_value(true)
-                .display_order(5),
-        )
-        .arg(
-            Arg::with_name("cache-stale")
-                .help("Skip making a new request to a source if it has been less than this many seconds since that source's cache was last modified. 0 to ignore any caches. Default 60")
-                .long("cache-stale")
-                .takes_value(true)
-                .display_order(6),
-        )
-        .arg(
-            Arg::with_name("request-timeout")
-                .help("Timeout for requests in seconds. Default 5")
-                .long("request-timeout")
-                .takes_value(true)
-                .display_order(7),
-        )
-        .arg(
-            Arg::with_name("verbosity")
-                .help("Verbosity. Can be given multiple times")
-                .long("verbose")
-                .short("v")
-                .multiple(true)
-        )
-}
-
 fn main() {
-    let matches = get_args_app().get_matches();
+    let args = Args::parse();
 
     // Set log level
     let mut builder = Builder::from_default_env();
-    builder.filter_level(match matches.occurrences_of("verbosity") {
+    builder.filter_level(match args.verbose {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
         2 => LevelFilter::Info,
@@ -708,7 +671,7 @@ fn main() {
     builder.init();
 
     if let Err(e) = fetch_print_keys(
-        matches,
+        args,
         &mut UsersCache::new(),
         &SwitchUser {},
         &CurlHttpClient {},
@@ -1865,7 +1828,7 @@ mod tests_fetch_print_keys {
         let mut user_table = MockUsers::with_current_uid(root_user.uid());
         user_table.add_user(root_user);
 
-        let matches = get_args_app().get_matches_from(vec!["", "test_user"]);
+        let matches = Args::parse_from(vec!["", "test_user"]);
 
         assert!(fetch_print_keys(
             matches,
@@ -1986,7 +1949,7 @@ mod tests_fetch_print_keys {
             .return_const(())
             .times(1);
 
-        let matches = get_args_app().get_matches_from(vec![""]);
+        let matches = Args::parse_from(vec![""]);
 
         assert!(fetch_print_keys(
             matches,
@@ -2088,7 +2051,7 @@ mod tests_fetch_print_keys {
             .return_const(())
             .times(1);
 
-        let matches = get_args_app().get_matches_from(vec![
+        let matches = Args::parse_from(vec![
             "",
             "test_user",
             response_str,
@@ -2231,7 +2194,7 @@ mod tests_fetch_print_keys {
             .return_const(())
             .times(1);
 
-        let matches = get_args_app().get_matches_from(vec![
+        let matches = Args::parse_from(vec![
             "",
             "test_user",
             response_str,
