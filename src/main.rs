@@ -196,10 +196,17 @@ fn get_source_defs(source_defs_string: &str) -> Result<HashMap<String, String>> 
         {
             continue;
         }
-        source_defs_map.insert(
-            line_tokens.get(0).unwrap().to_string(),
-            line_tokens.get(1).unwrap().to_string(),
-        );
+        let line_key = line_tokens.get(0).unwrap().to_string();
+        let line_value = line_tokens.get(1).unwrap().to_string();
+        if source_defs_map.contains_key(&line_key) {
+            warn!(
+                "Duplicate source definition for {}; later definition \"{}\" will override earlier definition \"{}\"",
+                line_key,
+                line_value,
+                source_defs_map.get(&line_key).unwrap()
+            );
+        }
+        source_defs_map.insert(line_key, line_value);
     }
 
     ensure!(
@@ -929,6 +936,11 @@ mod tests_get_source_defs {
     #[test]
     fn test_two_lines() {
         prepare_get_source_defs_test("1 2\n3 4", Some(vec![("1", "2"), ("3", "4")]));
+    }
+
+    #[test]
+    fn test_duplicate_source_definition() {
+        prepare_get_source_defs_test("1 2\n1 4", Some(vec![("1", "4")]));
     }
 
     #[test]
