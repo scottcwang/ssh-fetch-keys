@@ -329,6 +329,30 @@ impl HttpClientTrait for CurlHttpClient {
     }
 }
 
+struct ReqwestHttpClient;
+
+impl HttpClientTrait for ReqwestHttpClient {
+    // Make request, timing out after request_timeout seconds
+    fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String> {
+        let parsed_url = reqwest::Url::parse(&url)
+            .context(format!("Invalid URL: {}", url))?;
+
+        info!("Making request to {}", url);
+
+        reqwest::blocking::Client::builder()
+            .timeout(time::Duration::from_secs(request_timeout))
+            .build()
+            .context("Could not create reqwest client")?
+            .get(parsed_url)
+            .send()
+            .context("Transfer failed in reqwest")?
+            .error_for_status()
+            .context("Response code was not succesful")?
+            .text()
+            .context("Could not decode response")
+    }
+}
+
 fn write_to_cache<U>(cache_path: PathBuf, response_str: &str, fs_trait: &U) -> Result<()>
 where
     U: FsTrait,
@@ -667,7 +691,7 @@ fn main() {
         args,
         &mut UsersCache::new(),
         &SwitchUser {},
-        &CurlHttpClient {},
+        &ReqwestHttpClient {},
         &StdFs {},
         &StdOut {},
     ) {
