@@ -1,10 +1,9 @@
 use anyhow::{ensure, Context, Error, Result};
 use clap::Parser;
 use crc::{Crc, CRC_32_ISO_HDLC};
-use curl::easy::Easy;
 use env_logger::Builder;
 use lazy_static::lazy_static;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mockall::automock;
 use regex::{Captures, Regex};
 use std::collections::HashMap;
@@ -296,14 +295,17 @@ trait HttpClientTrait {
     fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String>;
 }
 
+#[cfg(feature = "curl")]
 struct CurlHttpClient;
 
+#[cfg(feature = "curl")]
 impl HttpClientTrait for CurlHttpClient {
     // Make request, timing out after request_timeout seconds
     fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String> {
+        debug!("Using curl");
         info!("Making request to {}", url);
         let mut response = Vec::new();
-        let mut easy = Easy::new();
+        let mut easy = curl::easy::Easy::new();
         easy.url(&url)?;
         easy.timeout(time::Duration::from_secs(request_timeout))?;
         easy.follow_location(true)?;
@@ -329,14 +331,17 @@ impl HttpClientTrait for CurlHttpClient {
     }
 }
 
+#[cfg(feature = "reqwest")]
 struct ReqwestHttpClient;
 
+#[cfg(feature = "reqwest")]
 impl HttpClientTrait for ReqwestHttpClient {
     // Make request, timing out after request_timeout seconds
     fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String> {
         let parsed_url = reqwest::Url::parse(&url)
             .context(format!("Invalid URL: {}", url))?;
 
+        debug!("Using reqwest");
         info!("Making request to {}", url);
 
         reqwest::blocking::Client::builder()
@@ -691,7 +696,12 @@ fn main() {
         args,
         &mut UsersCache::new(),
         &SwitchUser {},
-        &ReqwestHttpClient {},
+        {
+            #[cfg(feature = "curl")]
+            { &CurlHttpClient {} }
+            #[cfg(feature = "reqwest")]
+            { &ReqwestHttpClient {} }
+        },
         &StdFs {},
         &StdOut {},
     ) {
