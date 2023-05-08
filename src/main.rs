@@ -4,7 +4,6 @@ use crc::{Crc, CRC_32_ISO_HDLC};
 use env_logger::Builder;
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
-use mockall::automock;
 use regex::{Captures, Regex};
 use std::collections::HashMap;
 use std::fs;
@@ -19,7 +18,10 @@ use users::os::unix::UserExt;
 use users::switch;
 use users::{User, Users, UsersCache};
 
-#[automock]
+#[cfg(test)]
+use mockall::automock;
+
+#[cfg_attr(test, automock)]
 trait SwitchUserGuardTrait {
     fn drop_trait(&self);
 }
@@ -30,7 +32,7 @@ impl SwitchUserGuardTrait for switch::SwitchUserGuard {
     }
 }
 
-#[automock]
+#[cfg_attr(test, automock)]
 trait SwitchUserTrait {
     fn switch_user_group(
         &self,
@@ -94,7 +96,7 @@ where
     }
 }
 
-#[automock]
+#[cfg_attr(test, automock)]
 trait MetadataTrait {
     fn uid_trait(&self) -> u32;
     fn mode_trait(&self) -> u32;
@@ -120,7 +122,7 @@ impl MetadataTrait for std::fs::Metadata {
     }
 }
 
-#[automock]
+#[cfg_attr(test, automock)]
 trait FsTrait {
     fn metadata(&self, path: &Path) -> Result<Box<dyn MetadataTrait>>;
     fn read_to_string(&self, path: &Path) -> Result<String>;
@@ -297,7 +299,7 @@ fn construct_url(
     Ok(url)
 }
 
-#[automock]
+#[cfg_attr(test, automock)]
 trait HttpClientTrait {
     fn request_from_url(&self, url: String, request_timeout: u64) -> Result<String>;
 }
@@ -474,7 +476,7 @@ fn is_key_in_response_str(key_to_find_option: Option<&str>, response_str: String
     }
 }
 
-#[automock]
+#[cfg_attr(test, automock)]
 trait PrintTrait {
     fn print(&self, s: &str);
 }
@@ -756,7 +758,7 @@ mod tests_switch_user {
         switch_user(user_name_option, &mut user_table, &mock_switch_user)
     }
 
-    #[test]
+    #[test_log::test]
     fn test_some_user_name() {
         let (actual_user, expected_switch_user_guard_option) =
             prepare_switch_user_test(Some("test_user"), true).unwrap();
@@ -768,7 +770,7 @@ mod tests_switch_user {
         assert!(expected_switch_user_guard_option.is_some());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_none_user_name() {
         let (actual_user, expected_switch_user_guard_option) =
             prepare_switch_user_test(None, false).unwrap();
@@ -780,7 +782,7 @@ mod tests_switch_user {
         assert!(expected_switch_user_guard_option.is_none());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_bogus_user_name() {
         assert!(prepare_switch_user_test(Some("bogus_user"), false).is_err());
     }
@@ -792,7 +794,7 @@ mod tests_ensure_safe_permissions_and_read {
     use anyhow::anyhow;
     use mockall::predicate;
 
-    #[test]
+    #[test_log::test]
     fn test_nonexistent() {
         let mut mock_fs = MockFsTrait::new();
         let path = Path::new("/home/user/.ssh/fetch_keys");
@@ -806,7 +808,7 @@ mod tests_ensure_safe_permissions_and_read {
         );
     }
 
-    #[test]
+    #[test_log::test]
     fn test_not_owned_by_user() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -825,7 +827,7 @@ mod tests_ensure_safe_permissions_and_read {
         );
     }
 
-    #[test]
+    #[test_log::test]
     fn test_bad_permissions() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -849,7 +851,7 @@ mod tests_ensure_safe_permissions_and_read {
         );
     }
 
-    #[test]
+    #[test_log::test]
     fn test_read_to_string() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -908,47 +910,47 @@ mod tests_get_source_defs {
         }
     }
 
-    #[test]
+    #[test_log::test]
     fn test_empty() {
         prepare_get_source_defs_test("", None);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_one_line_two_tokens() {
         prepare_get_source_defs_test("1 2", Some(vec![("1", "2")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_extra_spaces() {
         prepare_get_source_defs_test("1   2", Some(vec![("1", "2")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_comment_line() {
         prepare_get_source_defs_test("1 2\n # comment", Some(vec![("1", "2")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_blank_line() {
         prepare_get_source_defs_test("1 2\n\n3 4", Some(vec![("1", "2"), ("3", "4")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_two_lines() {
         prepare_get_source_defs_test("1 2\n3 4", Some(vec![("1", "2"), ("3", "4")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_duplicate_source_definition() {
         prepare_get_source_defs_test("1 2\n1 4", Some(vec![("1", "4")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_three_tokens() {
         prepare_get_source_defs_test("1 2 3", Some(vec![("1", "2")]));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_one_token() {
         prepare_get_source_defs_test("1 2\n3", Some(vec![("1", "2")]));
     }
@@ -968,17 +970,17 @@ mod tests_get_user_defs {
         );
     }
 
-    #[test]
+    #[test_log::test]
     fn test_empty() {
         prepare_get_user_defs_test("", vec![]);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_one_line() {
         prepare_get_user_defs_test("1 2", vec!["1 2"]);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_two_lines() {
         prepare_get_user_defs_test("1\n2", vec!["1", "2"]);
     }
@@ -1005,27 +1007,27 @@ mod tests_get_cache_filename {
         );
     }
 
-    #[test]
+    #[test_log::test]
     fn test_one_token() {
         prepare_get_cache_filename_test(vec!["1"], "/tmp", "/tmp/83dcefb7-1");
     }
 
-    #[test]
+    #[test_log::test]
     fn test_two_tokens() {
         prepare_get_cache_filename_test(vec!["1", "2"], "/tmp", "/tmp/87bb2397-1_2");
     }
 
-    #[test]
+    #[test_log::test]
     fn test_allowed_nonalphanumeric_character() {
         prepare_get_cache_filename_test(vec!["1-2"], "/tmp", "/tmp/32155dda-1-2");
     }
 
-    #[test]
+    #[test_log::test]
     fn test_forbidden_nonalphanumeric_character() {
         prepare_get_cache_filename_test(vec!["1*2"], "/tmp", "/tmp/7d54cb1d-1-2");
     }
 
-    #[test]
+    #[test_log::test]
     fn test_directory() {
         prepare_get_cache_filename_test(vec!["1*2"], "/tmp/test", "/tmp/test/7d54cb1d-1-2");
     }
@@ -1036,7 +1038,7 @@ mod tests_is_cache_fresh {
     use super::*;
     use anyhow::anyhow;
 
-    #[test]
+    #[test_log::test]
     fn test_err() {
         let mut mock_metadata = MockMetadataTrait::new();
         mock_metadata
@@ -1046,7 +1048,7 @@ mod tests_is_cache_fresh {
         assert!(is_cache_fresh(Box::new(mock_metadata), 0).is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_stale_ok_false() {
         let mut mock_metadata = MockMetadataTrait::new();
         mock_metadata
@@ -1060,7 +1062,7 @@ mod tests_is_cache_fresh {
         assert!(!is_cache_fresh(Box::new(mock_metadata), 1).unwrap());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_fresh_ok_true() {
         let mut mock_metadata = MockMetadataTrait::new();
         mock_metadata
@@ -1106,22 +1108,22 @@ mod tests_construct_url {
         }
     }
 
-    #[test]
+    #[test_log::test]
     fn test_undefined_source() {
         prepare_construct_url_test(vec![], "a b", Err(anyhow!("")));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_correct_parameters() {
         prepare_construct_url_test(vec![("a", "z{1}{2}")], "a b c", Ok("zbc"));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_too_few_parameters() {
         prepare_construct_url_test(vec![("a", "z{1}{2}")], "a b", Err(anyhow!("")));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_too_many_parameters() {
         prepare_construct_url_test(vec![("a", "z{1}{2}{3}")], "a b", Err(anyhow!("")));
     }
@@ -1133,12 +1135,12 @@ mod tests_write_to_cache {
     use anyhow::anyhow;
     use mockall::predicate;
 
-    #[test]
+    #[test_log::test]
     fn test_bad_cache_path_parent() {
         assert!(write_to_cache(PathBuf::from("/"), "", &MockFsTrait::new()).is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_cache_dir_exists() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1170,7 +1172,7 @@ mod tests_write_to_cache {
         assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_ok());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_cache_exists_not_a_dir() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1189,7 +1191,7 @@ mod tests_write_to_cache {
         assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_cache_dir_does_not_exist() {
         let mut mock_fs = MockFsTrait::new();
         let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
@@ -1221,7 +1223,7 @@ mod tests_write_to_cache {
         assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_ok());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_cache_dir_does_not_exist_could_not_create() {
         let mut mock_fs = MockFsTrait::new();
         let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/test");
@@ -1240,7 +1242,7 @@ mod tests_write_to_cache {
         assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_cache_dir_could_not_write() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1264,7 +1266,7 @@ mod tests_write_to_cache {
         assert!(write_to_cache(cache_path.to_path_buf(), response_str, &mock_fs).is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_could_not_set_permissions() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1303,7 +1305,7 @@ mod tests_process_user_def_line {
     use anyhow::anyhow;
     use mockall::predicate;
 
-    #[test]
+    #[test_log::test]
     fn test_comment_line() {
         assert!(matches!(
             process_user_def_line(
@@ -1321,7 +1323,7 @@ mod tests_process_user_def_line {
         ));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_blank_line() {
         assert!(matches!(
             process_user_def_line(
@@ -1339,7 +1341,7 @@ mod tests_process_user_def_line {
         ));
     }
 
-    #[test]
+    #[test_log::test]
     fn test_fresh_cache() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1393,7 +1395,7 @@ mod tests_process_user_def_line {
         assert_eq!(actual_cache_vec.len(), 0);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_stale_cache() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1480,7 +1482,7 @@ mod tests_process_user_def_line {
         assert_eq!(actual_cache_vec[0], response_str);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_no_cache() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata_parent = MockMetadataTrait::new();
@@ -1544,7 +1546,7 @@ mod tests_process_user_def_line {
         assert_eq!(actual_cache_vec.len(), 0);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_construct_url_failed() {
         let mut mock_fs = MockFsTrait::new();
         let cache_path = Path::new("/home/user/.ssh/fetch_keys.d/87bb2397-1_2");
@@ -1572,7 +1574,7 @@ mod tests_process_user_def_line {
         assert_eq!(actual_cache_vec.len(), 0);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_request_from_url_failed() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_http_client = MockHttpClientTrait::new();
@@ -1609,7 +1611,7 @@ mod tests_process_user_def_line {
         assert_eq!(actual_cache_vec.len(), 0);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_write_to_cache_failed() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata_parent = MockMetadataTrait::new();
@@ -1670,22 +1672,22 @@ mod tests_process_user_def_line {
 mod tests_is_key_in_response_str {
     use super::*;
 
-    #[test]
+    #[test_log::test]
     fn none() {
         assert!(!is_key_in_response_str(None, "".to_string()));
     }
 
-    #[test]
+    #[test_log::test]
     fn some_no() {
         assert!(!is_key_in_response_str(Some("a"), "b\nc".to_string()));
     }
 
-    #[test]
+    #[test_log::test]
     fn some_yes_end() {
         assert!(is_key_in_response_str(Some("a"), "b\na".to_string()));
     }
 
-    #[test]
+    #[test_log::test]
     fn some_yes_middle() {
         assert!(is_key_in_response_str(Some("b"), "ab\nc".to_string()));
     }
@@ -1697,7 +1699,7 @@ mod tests_process_user_defs {
     use anyhow::anyhow;
     use mockall::predicate;
 
-    #[test]
+    #[test_log::test]
     fn found() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1756,7 +1758,7 @@ mod tests_process_user_defs {
         .is_ok());
     }
 
-    #[test]
+    #[test_log::test]
     fn only_stale() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_metadata = MockMetadataTrait::new();
@@ -1821,7 +1823,7 @@ mod tests_process_user_defs {
         .is_ok());
     }
 
-    #[test]
+    #[test_log::test]
     fn err() {
         let mut mock_fs = MockFsTrait::new();
         let mut mock_http_client = MockHttpClientTrait::new();
@@ -1865,7 +1867,7 @@ mod tests_fetch_print_keys {
     use users::mock::MockUsers;
     use users::User;
 
-    #[test]
+    #[test_log::test]
     fn cannot_switch_user() {
         let root_user = User::new(0, "root", 0);
 
@@ -1885,7 +1887,7 @@ mod tests_fetch_print_keys {
         .is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn defaults() {
         let expected_user_uid = 1000;
         let expected_user_gid = 1000;
@@ -2006,7 +2008,7 @@ mod tests_fetch_print_keys {
         .is_ok());
     }
 
-    #[test]
+    #[test_log::test]
     fn all_args_specified_including_override_strings() {
         let user_defs = "/tmp/user_defs";
         let source_defs = "/tmp/source_defs";
@@ -2125,7 +2127,7 @@ mod tests_fetch_print_keys {
         )
         .is_ok());
     }
-    #[test]
+    #[test_log::test]
     fn all_args_specified_except_override_string() {
         let user_defs = "/tmp/user_defs";
         let source_defs = "/tmp/source_defs";
