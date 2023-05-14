@@ -1029,6 +1029,7 @@ dependencies = [
  "regex",
  "reqwest",
  "test-log",
+ "url",
  "users",
 ]
 

@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Error, Result};
+use anyhow::{anyhow, ensure, Context, Error, Result};
 use clap::Parser;
 use crc::{Crc, CRC_32_ISO_HDLC};
 use env_logger::Builder;
@@ -189,26 +189,60 @@ where
         .map(|read_string| (read_string, metadata))
 }
 
-// Parses the source definitions &str into a HashMap of sources to URL templates
-fn get_source_defs(source_defs_string: &str) -> Result<HashMap<String, String>> {
+lazy_static! {
+    // Space-delimited tokens, except those within double quotes,
+    // where double quotes inside double quotes may be escaped
+    // with a backslash
+    static ref REGEX_SPACE_DELIMITED: Regex = Regex::new(r#"([^ "]*"([^\\]|\\.)*?"[^ "]*)+|[^ "]+"#).unwrap();
+}
+
+// Parses the source definitions &str into a HashMap of sources to a tuple
+// of a URL template and any options
+fn get_source_defs(source_defs_string: &str)
+    -> Result<HashMap<String, (String, Option<String>)>> 
+{
     let mut source_defs_map = HashMap::new();
     for line in source_defs_string.lines() {
-        let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
-        if line_tokens.len() < 2 || line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#'
-        {
+        let line_tokens: Vec<String> = REGEX_SPACE_DELIMITED.find_iter(line)
+            .map(|m| m.as_str().to_string())
+            .collect();
+
+        // Line is empty or begins with #
+        if line_tokens.len() == 0
+                || line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#' {
             continue;
         }
-        let line_key = line_tokens.get(0).unwrap().to_string();
-        let line_value = line_tokens.get(1).unwrap().to_string();
+
+        if line_tokens.len() < 2 {
+            warn!("Skipping invalid source line: {}", line);
+            continue;
+        }
+
+        let (line_key, line_url, line_opts) = if line_tokens.get(2)
+            .and_then(|token| reqwest::Url::parse(token).ok())
+            .map(String::from)
+            .is_some() {
+                (
+                    line_tokens.get(1).unwrap().to_string(),
+                    line_tokens.get(2).unwrap().to_string(),
+                    Some(line_tokens.get(0).unwrap().to_string())
+                )
+            } else {
+                (
+                    line_tokens.get(0).unwrap().to_string(),
+                    line_tokens.get(1).unwrap().to_string(),
+                    None
+                )
+            };
         if source_defs_map.contains_key(&line_key) {
             warn!(
-                "Duplicate source definition for {}; later definition \"{}\" will override earlier definition \"{}\"",
+                "Duplicate source definition for {}; later definition \"{:?}\" will override earlier definition \"{:?}\"",
                 line_key,
-                line_value,
+                (&line_url, &line_opts),
                 source_defs_map.get(&line_key).unwrap()
             );
         }
-        source_defs_map.insert(line_key, line_value);
+        source_defs_map.insert(line_key, (line_url, line_opts));
     }
 
     ensure!(
@@ -219,18 +253,18 @@ fn get_source_defs(source_defs_string: &str) -> Result<HashMap<String, String>> 
     Ok(source_defs_map)
 }
 
-// Parses the user's key definitions &str into a Vec of lines
-fn get_user_defs(user_defs_string: &str) -> Vec<String> {
-    user_defs_string
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<String>>()
-}
-
 // Construct the filename in which the cached response lives
-fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf {
+fn get_cache_filename(
+    source_name: &str,
+    line_tokens: &[String],
+    cache_directory: &Path
+) -> PathBuf {
+    let mut source_name_line_tokens = vec![source_name.to_string()];
+    source_name_line_tokens.extend_from_slice(line_tokens);
+
     // Canonicalise user definition line by combining whitespace
-    let line_join_ascii_whitespace = line_tokens.join(" ");
+    let line_join_ascii_whitespace = source_name_line_tokens.join(" ");
+
     let crc_line =
         Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(line_join_ascii_whitespace.as_bytes());
 
@@ -239,7 +273,7 @@ fn get_cache_filename(line_tokens: &[String], cache_directory: &Path) -> PathBuf
     }
 
     // Replace all characters that aren't alphanumeric, _, ., or - with -
-    let line_join_hyphen = line_tokens
+    let line_join_hyphen = source_name_line_tokens
         .iter()
         .map(|token| {
             REGEX_FILENAME
@@ -264,37 +298,31 @@ fn is_cache_fresh(metadata: Box<dyn MetadataTrait>, cache_stale: u64) -> Result<
         <= cache_stale)
 }
 
-// Construct URL, given HashMap of sources to URL templates as well as tokens
-fn construct_url(
-    source_defs_map: &HashMap<String, String>,
-    line_tokens: Vec<String>,
+// Construct URL, given URL template and tokens
+fn construct_url<T: AsRef<str>>(
+    url_template: &str,
+    tokens: &[T],
 ) -> Result<String> {
-    let source = line_tokens.get(0).unwrap();
-    let source_def = source_defs_map.get(source);
-
-    let url_template =
-        source_def.ok_or_else(|| Error::msg(format!("{} is not a defined source", source)))?;
-
     lazy_static! {
         static ref REGEX_URL: Regex = Regex::new(r"\{(?P<index>[[:digit:]]+)\}").unwrap();
     }
 
-    info!("Found URL template for source {}", source);
     let mut replacement_successful = true;
     let url = REGEX_URL
-        .replace_all(url_template, |caps: &Captures| {
-            let index: usize = caps.name("index").unwrap().as_str().parse().unwrap();
-            if index < line_tokens.len() {
-                &line_tokens.get(index).unwrap()
-            } else {
-                replacement_successful = false;
-                ""
+        .replace_all(&url_template, |caps: &Captures| {
+            let index = caps.name("index").unwrap().as_str().parse::<usize>().unwrap() - 1;
+            match tokens.get(index) {
+                Some(x) => x.as_ref(),
+                None => {
+                    replacement_successful = false;
+                    ""
+                }
             }
-        })
-        .to_string();
+        }).to_string();
+
     ensure!(
         replacement_successful,
-        format!("Not enough parameters for source {}", source)
+        format!("Not enough parameters")
     );
     Ok(url)
 }
@@ -401,7 +429,55 @@ where
     Ok(())
 }
 
-// Parses a line of the user's key definitions file
+// Parses the user definitions line, returning the source name, the source
+// definition, the user tokens to be used to replace the tokens in the URL
+// template, and any user options
+// If the second token is the name of a source in source_defs_map, then
+// assumes the first token is the user options
+// Otherwise, if the first token is the name of a source in source_defs_map,
+// assumes there are no user options
+fn parse_user_def_line(
+    user_defs_line: &str,
+    source_defs_map: &HashMap<String, (String, Option<String>)>
+) -> Result<Option<(
+        (String, (String, Option<String>)),
+        Vec<String>,
+        Option<String>
+)>> {
+    let user_line_tokens: Vec<String> = REGEX_SPACE_DELIMITED.find_iter(user_defs_line)
+        .map(|m| m.as_str().to_string())
+        .collect();
+
+    // Line is empty or begins with #
+    if user_line_tokens.len() == 0
+            || user_line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#' {
+        return Ok(None);
+    }
+
+    user_line_tokens.get(1)
+        .and_then(|source_name| source_defs_map.get_key_value(source_name))
+        .map(|(source_name, source_def)|
+            Some((
+                (source_name.to_string(), source_def.to_owned()),
+                user_line_tokens.split_at(2).1.to_vec(),
+                Some(user_line_tokens.get(0).unwrap().to_string())
+            ))
+        )
+        .or_else(||
+            user_line_tokens.get(0)
+                .and_then(|source_name| source_defs_map.get_key_value(source_name))
+                .map(|(source_name, source_def)|
+                    Some((
+                        (source_name.to_string(), source_def.to_owned()),
+                        user_line_tokens.split_at(1).1.to_vec(),
+                        None
+                    ))
+                )
+        )
+        .ok_or_else(|| anyhow!("No source definition found for source {}", user_line_tokens.get(0).unwrap()))
+}
+
+// Processes a line of the user's key definitions file
 // If there exists a cached response and it is fresher than cache_stale seconds, print it, return Ok(Some(cached response)), and omit making the request
 // If there exists a cached response but it is staler than cache_stale seconds, dump the cached response into cached_output, and proceed to making the request
 // If response code is not 200, then return Ok(None)
@@ -409,8 +485,8 @@ where
 // If any other error occurs, return Err()
 fn process_user_def_line<T, U>(
     user: &User,
-    line: String,
-    source_defs_map: &HashMap<String, String>,
+    source: (String, (String, Option<String>)),
+    user_line_tokens: &[String],
     cache_directory: &Path,
     cached_output: &mut Vec<String>,
     cache_stale: u64,
@@ -422,14 +498,9 @@ where
     T: HttpClientTrait,
     U: FsTrait,
 {
-    let line_tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
-
-    // Skip comment lines and blank lines
-    if line_tokens.is_empty() || line_tokens.get(0).unwrap().chars().next().unwrap_or('#') == '#' {
-        return Ok(None);
-    }
-
-    let cache_path = get_cache_filename(&line_tokens, cache_directory);
+    let cache_path = get_cache_filename(
+        &source.0, user_line_tokens, cache_directory
+    );
 
     info!("Looking for a cached response at {:?}", cache_path);
     match ensure_safe_permissions_and_read(&cache_path, Some(user), fs_trait).and_then(
@@ -455,7 +526,10 @@ where
     }
 
     let url =
-        construct_url(source_defs_map, line_tokens).context("Couldn't construct request URL")?;
+        construct_url(
+            &source.1.0,
+            user_line_tokens
+        ).context("Couldn't construct request URL")?;
 
     let response_str = http_client_trait
         .request_from_url(url, request_timeout)
@@ -489,12 +563,12 @@ impl PrintTrait for StdOut {
     }
 }
 
-// Parse and process a Vec of user definitions lines
+// Parse and process a user definitions string
 fn process_user_defs<T, U, V>(
     user: &User,
-    source_defs: HashMap<String, String>,
+    source_defs_map: &HashMap<String, (String, Option<String>)>,
     cache_directory: &Path,
-    user_defs: Vec<String>,
+    user_defs_string: &str,
     key_to_find: Option<&str>,
     cache_stale: u64,
     request_timeout: u64,
@@ -511,40 +585,48 @@ where
 
     let mut some_line_output = false;
 
-    for (line_number, line) in user_defs.into_iter().enumerate() {
-        let line_result = process_user_def_line(
-            user,
-            line,
-            &source_defs,
-            cache_directory,
-            &mut cached_output,
-            cache_stale,
-            request_timeout,
-            http_client_trait,
-            fs_trait,
-        );
+    for (line_number, user_defs_line) in user_defs_string.lines().into_iter().enumerate() {
+        let parsed_line = parse_user_def_line(user_defs_line, source_defs_map)?;
 
-        match line_result {
-            Ok(Some(line_retrieved_response)) => {
-                // If there was no error processing this line, and there exists a fresh cache or the response code is 200 for this line ...
-                some_line_output = true;
-                print_trait.print(&line_retrieved_response);
-                if is_key_in_response_str(key_to_find, line_retrieved_response) {
-                    // ... and the key_to_find (if Some) is found, then skip subsequent lines
-                    info!(
-                        "Found the provided key when processing line {}. Skipping subsequent lines",
-                        line_number + 1
-                    );
-                    break;
+        if let Some((
+            source,
+            user_line_tokens,
+            user_opts
+        )) = parsed_line {
+            info!("Found source {} for user definition line {}", source.0, user_defs_line);
+
+            match process_user_def_line(
+                user,
+                source,
+                &user_line_tokens,
+                cache_directory,
+                &mut cached_output,
+                cache_stale,
+                request_timeout,
+                http_client_trait,
+                fs_trait,
+            ) {
+                Ok(Some(line_retrieved_response)) => {
+                    // If there was no error processing this line, and there exists a fresh cache or the response code is 200 for this line ...
+                    some_line_output = true;
+                    print_trait.print(&line_retrieved_response);
+                    if is_key_in_response_str(key_to_find, line_retrieved_response) {
+                        // ... and the key_to_find (if Some) is found, then skip subsequent lines
+                        info!(
+                            "Found the provided key when processing line {}. Skipping subsequent lines",
+                            line_number + 1
+                        );
+                        break;
+                    }
                 }
-            }
-            Ok(None) => {}
-            Err(line_err) => {
-                // If there was an error processing this line, skip it
-                warn!(
-                    "{:?}",
-                    line_err.context(format!("Skipping line {}", line_number + 1))
-                );
+                Ok(None) => {}
+                Err(line_err) => {
+                    // If there was an error processing this line, skip it
+                    warn!(
+                        "{:?}",
+                        line_err.context(format!("Skipping line {}", line_number + 1))
+                    );
+                }
             }
         }
     }
@@ -628,7 +710,7 @@ where
 
     process_user_defs(
         &user,
-        {
+        &{
             match args.override_source_def {
                 Some(override_source_def) => get_source_defs(&override_source_def),
                 None => {
@@ -661,19 +743,17 @@ where
             Some(override_path) => PathBuf::from(override_path),
             None => user.home_dir().join(".ssh/fetch_keys.d"),
         },
-        {
+        &{
             match args.override_user_def {
-                Some(override_user_def) => get_user_defs(&override_user_def),
+                Some(override_user_def) => override_user_def,
                 None => {
                     let (user_defs_path, user_option) = match args.user_defs {
                         Some(override_path) => (PathBuf::from(override_path), None),
                         None => (user.home_dir().join(".ssh/fetch_keys"), Some(&user)),
                     };
                     info!("Looking for user definitions at {:?}", user_defs_path);
-                    get_user_defs(
-                        &ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)?
-                            .0,
-                    )
+                    ensure_safe_permissions_and_read(&user_defs_path, user_option, fs_trait)?
+                        .0
                 }
             }
         },
@@ -889,7 +969,7 @@ mod tests_get_source_defs {
 
     fn prepare_get_source_defs_test(
         source_defs_string: &str,
-        expected_result_vec_pairs: Option<Vec<(&str, &str)>>,
+        expected_result_vec_pairs: Option<Vec<(&str, (&str, Option<&str>))>>,
     ) {
         let actual_source_defs_map_result = get_source_defs(source_defs_string);
 
@@ -900,7 +980,7 @@ mod tests_get_source_defs {
                     expected_result_vec_pairs
                         .unwrap()
                         .into_iter()
-                        .map(|(a, b)| (a.to_string(), b.to_string()))
+                        .map(|(a, (b, c))| (a.to_string(), (b.to_string(), c.map(str::to_string))))
                         .collect()
                 );
             }
@@ -911,78 +991,110 @@ mod tests_get_source_defs {
     }
 
     #[test_log::test]
-    fn test_empty() {
+    fn test_empty_string() {
         prepare_get_source_defs_test("", None);
     }
 
     #[test_log::test]
-    fn test_one_line_two_tokens() {
-        prepare_get_source_defs_test("1 2", Some(vec![("1", "2")]));
-    }
-
-    #[test_log::test]
-    fn test_extra_spaces() {
-        prepare_get_source_defs_test("1   2", Some(vec![("1", "2")]));
-    }
-
-    #[test_log::test]
-    fn test_comment_line() {
-        prepare_get_source_defs_test("1 2\n # comment", Some(vec![("1", "2")]));
-    }
-
-    #[test_log::test]
-    fn test_blank_line() {
-        prepare_get_source_defs_test("1 2\n\n3 4", Some(vec![("1", "2"), ("3", "4")]));
-    }
-
-    #[test_log::test]
-    fn test_two_lines() {
-        prepare_get_source_defs_test("1 2\n3 4", Some(vec![("1", "2"), ("3", "4")]));
-    }
-
-    #[test_log::test]
-    fn test_duplicate_source_definition() {
-        prepare_get_source_defs_test("1 2\n1 4", Some(vec![("1", "4")]));
-    }
-
-    #[test_log::test]
-    fn test_three_tokens() {
-        prepare_get_source_defs_test("1 2 3", Some(vec![("1", "2")]));
-    }
-
-    #[test_log::test]
-    fn test_one_token() {
-        prepare_get_source_defs_test("1 2\n3", Some(vec![("1", "2")]));
-    }
-}
-
-#[cfg(test)]
-mod tests_get_user_defs {
-    use super::*;
-
-    fn prepare_get_user_defs_test(user_defs_string: &str, expected_result_vec: Vec<&str>) {
-        assert_eq!(
-            get_user_defs(user_defs_string),
-            expected_result_vec
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<String>>()
+    fn test_empty_line_skipped() {
+        prepare_get_source_defs_test(
+            "1 https://example.com/{}1\n\n2 https://example.com/{}2",
+            Some(vec![
+                ("1", ("https://example.com/{}1", None)),
+                ("2", ("https://example.com/{}2", None))
+            ])
         );
     }
 
     #[test_log::test]
-    fn test_empty() {
-        prepare_get_user_defs_test("", vec![]);
+    fn test_comment_line_skipped() {
+        prepare_get_source_defs_test(
+            "1 https://example.com/{}\n# comment\n # comment\n#comment",
+            Some(vec![("1", ("https://example.com/{}", None))])
+        );
     }
 
     #[test_log::test]
-    fn test_one_line() {
-        prepare_get_user_defs_test("1 2", vec!["1 2"]);
+    fn test_one_token_skipped() {
+        prepare_get_source_defs_test(
+            "1 https://example.com/{}\n3",
+            Some(vec![("1", ("https://example.com/{}", None))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_two_tokens() {
+        prepare_get_source_defs_test(
+            "1 https://example.com/{}",
+            Some(vec![("1", ("https://example.com/{}", None))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_extra_spaces() {
+        prepare_get_source_defs_test(
+            "1   https://example.com/{}",
+            Some(vec![("1", ("https://example.com/{}", None))])
+        );
     }
 
     #[test_log::test]
     fn test_two_lines() {
-        prepare_get_user_defs_test("1\n2", vec!["1", "2"]);
+        prepare_get_source_defs_test(
+            "1 https://example.com/{}1\n2 https://example.com/{}2",
+            Some(vec![
+                ("1", ("https://example.com/{}1", None)),
+                ("2", ("https://example.com/{}2", None))
+            ])
+        );
+    }
+
+    #[test_log::test]
+    fn test_duplicate_source_definition() {
+        prepare_get_source_defs_test(
+            "1 https://example.com/{}1\n\n1 https://example.com/{}2",
+            Some(vec![("1", ("https://example.com/{}2", None))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_three_tokens_third_is_url() {
+        prepare_get_source_defs_test(
+            "option 1 https://example.com/{}",
+            Some(vec![("1", ("https://example.com/{}", Some("option")))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_three_tokens_third_is_url_first_has_quotes() {
+        prepare_get_source_defs_test(
+            "option\"abc\" 1 https://example.com/{}",
+            Some(vec![("1", ("https://example.com/{}", Some("option\"abc\"")))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_three_tokens_third_is_url_first_has_spaces_in_quotes() {
+        prepare_get_source_defs_test(
+            "option\"ab c\" 1 https://example.com/{}",
+            Some(vec![("1", ("https://example.com/{}", Some("option\"ab c\"")))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_three_tokens_third_is_url_first_has_escaped_quotes_in_quotes() {
+        prepare_get_source_defs_test(
+            "option\"ab\\\"c\" 1 https://example.com/{}",
+            Some(vec![("1", ("https://example.com/{}", Some("option\"ab\\\"c\"")))])
+        );
+    }
+
+    #[test_log::test]
+    fn test_three_tokens_third_is_not_url() {
+        prepare_get_source_defs_test(
+            "1 https://example.com/{} 2",
+            Some(vec![("1", ("https://example.com/{}", None))])
+        );
     }
 }
 
@@ -991,13 +1103,15 @@ mod tests_get_cache_filename {
     use super::*;
 
     fn prepare_get_cache_filename_test(
-        line: Vec<&str>,
+        source_name: &str,
+        line_tokens: Vec<&str>,
         cache_directory: &str,
         expected_result: &str,
     ) {
         assert_eq!(
             get_cache_filename(
-                &line
+                source_name,
+                &line_tokens
                     .into_iter()
                     .map(str::to_string)
                     .collect::<Vec<String>>(),
@@ -1009,27 +1123,32 @@ mod tests_get_cache_filename {
 
     #[test_log::test]
     fn test_one_token() {
-        prepare_get_cache_filename_test(vec!["1"], "/tmp", "/tmp/83dcefb7-1");
+        prepare_get_cache_filename_test("1", vec![], "/tmp", "/tmp/83dcefb7-1");
     }
 
     #[test_log::test]
     fn test_two_tokens() {
-        prepare_get_cache_filename_test(vec!["1", "2"], "/tmp", "/tmp/87bb2397-1_2");
+        prepare_get_cache_filename_test("1", vec!["2"], "/tmp", "/tmp/87bb2397-1_2");
+    }
+
+    #[test_log::test]
+    fn test_three_tokens() {
+        prepare_get_cache_filename_test("1", vec!["2", "3"], "/tmp", "/tmp/f7eabd5f-1_2_3");
     }
 
     #[test_log::test]
     fn test_allowed_nonalphanumeric_character() {
-        prepare_get_cache_filename_test(vec!["1-2"], "/tmp", "/tmp/32155dda-1-2");
+        prepare_get_cache_filename_test("1-2", vec![], "/tmp", "/tmp/32155dda-1-2");
     }
 
     #[test_log::test]
     fn test_forbidden_nonalphanumeric_character() {
-        prepare_get_cache_filename_test(vec!["1*2"], "/tmp", "/tmp/7d54cb1d-1-2");
+        prepare_get_cache_filename_test("1*2", vec![], "/tmp", "/tmp/7d54cb1d-1-2");
     }
 
     #[test_log::test]
     fn test_directory() {
-        prepare_get_cache_filename_test(vec!["1*2"], "/tmp/test", "/tmp/test/7d54cb1d-1-2");
+        prepare_get_cache_filename_test("1*2", vec![], "/tmp/test", "/tmp/test/7d54cb1d-1-2");
     }
 }
 
@@ -1083,22 +1202,11 @@ mod tests_construct_url {
     use anyhow::anyhow;
 
     fn prepare_construct_url_test(
-        source_defs_map_pairs: Vec<(&str, &str)>,
-        line_tokens_str: &str,
+        url_template: &str,
+        line_tokens: Vec<&str>,
         expected_result_url: Result<&str>,
     ) {
-        let source_defs_map: HashMap<String, String> = source_defs_map_pairs
-            .into_iter()
-            .map(|(a, b)| (a.to_string(), b.to_string()))
-            .collect();
-        let line_tokens = line_tokens_str
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-
-        let actual_construct_url_result = construct_url(&source_defs_map, line_tokens);
-
-        match actual_construct_url_result {
+        match construct_url(url_template, &line_tokens) {
             Ok(actual_construct_url) => {
                 assert_eq!(actual_construct_url, expected_result_url.unwrap());
             }
@@ -1109,23 +1217,18 @@ mod tests_construct_url {
     }
 
     #[test_log::test]
-    fn test_undefined_source() {
-        prepare_construct_url_test(vec![], "a b", Err(anyhow!("")));
-    }
-
-    #[test_log::test]
     fn test_correct_parameters() {
-        prepare_construct_url_test(vec![("a", "z{1}{2}")], "a b c", Ok("zbc"));
+        prepare_construct_url_test("z{1}{2}", vec!["a", "b"], Ok("zab"));
     }
 
     #[test_log::test]
     fn test_too_few_parameters() {
-        prepare_construct_url_test(vec![("a", "z{1}{2}")], "a b", Err(anyhow!("")));
+        prepare_construct_url_test("z{1}{2}", vec!["a"], Err(anyhow!("")));
     }
 
     #[test_log::test]
     fn test_too_many_parameters() {
-        prepare_construct_url_test(vec![("a", "z{1}{2}{3}")], "a b", Err(anyhow!("")));
+        prepare_construct_url_test("z{1}{2}", vec!["a", "b", "c"], Ok("zab"));
     }
 }
 
@@ -1300,46 +1403,106 @@ mod tests_write_to_cache {
 }
 
 #[cfg(test)]
+mod tests_parse_user_def_line {
+    use super::*;
+
+    fn prepare_parse_user_def_line_test(
+        user_defs_line: &str,
+        source_defs_map: Vec<(&str, (&str, Option<&str>))>,
+        expected_result: Option<Option<(
+            (&str, (&str, Option<&str>)),
+            Vec<&str>,
+            Option<&str>
+        )>>
+    ) {
+        let actual_parse_user_def_line_result = parse_user_def_line(
+            user_defs_line,
+            &source_defs_map
+                .into_iter()
+                .map(|(a, (b, c))| (a.to_string(), (b.to_string(), c.map(str::to_string))))
+                .collect()
+        );
+
+        match actual_parse_user_def_line_result {
+            Ok(actual_parse_user_def_line) => {
+                assert_eq!(
+                    actual_parse_user_def_line,
+                    expected_result
+                        .unwrap()
+                        .map(|((a, (b, c)), d, e)|
+                            (
+                                (a.to_string(), (b.to_string(), c.map(str::to_string))),
+                                d.into_iter().map(str::to_string).collect(),
+                                e.map(str::to_string)
+                            )
+                        )
+                );
+            }
+            Err(_) => {
+                assert!(expected_result.is_none());
+            }
+        }
+    }
+
+    #[test_log::test]
+    fn test_empty_string() {
+        prepare_parse_user_def_line_test("", vec![], Some(None));
+    }
+
+    #[test_log::test]
+    fn test_comment_line_skipped_1() {
+        prepare_parse_user_def_line_test(
+            "# comment", vec![], Some(None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_comment_line_skipped_2() {
+        prepare_parse_user_def_line_test(
+            " # comment", vec![], Some(None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_comment_line_skipped_3() {
+        prepare_parse_user_def_line_test(
+            "#comment", vec![], Some(None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_second_token_is_in_map() {
+        prepare_parse_user_def_line_test(
+            "user-option 1 2 3",
+            vec![("1", ("{1}", Some("source-option")))],
+            Some(Some((("1", ("{1}", Some("source-option"))), vec!["2", "3"], Some("user-option"))))
+        );
+    }
+
+    #[test_log::test]
+    fn test_second_token_not_in_map_first_token_is_in_map() {
+        prepare_parse_user_def_line_test(
+            "1 2 3",
+            vec![("1", ("{1}", Some("source-option")))],
+            Some(Some((("1", ("{1}", Some("source-option"))), vec!["2", "3"], None)))
+        );
+    }
+
+    #[test_log::test]
+    fn test_second_token_not_in_map_first_token_not_in_map() {
+        prepare_parse_user_def_line_test(
+            "2 3 4",
+            vec![("1", ("{1}", Some("source-option")))],
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests_process_user_def_line {
     use super::*;
     use anyhow::anyhow;
     use mockall::predicate;
-
-    #[test_log::test]
-    fn test_comment_line() {
-        assert!(matches!(
-            process_user_def_line(
-                &User::new(0, "", 0),
-                "# comment".to_string(),
-                &HashMap::new(),
-                Path::new(""),
-                &mut vec![],
-                0,
-                0,
-                &MockHttpClientTrait::new(),
-                &MockFsTrait::new()
-            ),
-            Ok(None)
-        ));
-    }
-
-    #[test_log::test]
-    fn test_blank_line() {
-        assert!(matches!(
-            process_user_def_line(
-                &User::new(0, "", 0),
-                " ".to_string(),
-                &HashMap::new(),
-                Path::new(""),
-                &mut vec![],
-                0,
-                0,
-                &MockHttpClientTrait::new(),
-                &MockFsTrait::new()
-            ),
-            Ok(None)
-        ));
-    }
 
     #[test_log::test]
     fn test_fresh_cache() {
@@ -1379,8 +1542,8 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            "1 2".to_string(),
-            &HashMap::new(),
+            ("1".to_string(), ("{1}".to_string(), None)),
+            &vec!["2".to_string()],
             cache_directory,
             &mut actual_cache_vec,
             60,
@@ -1462,11 +1625,8 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            "1 2".to_string(),
-            &vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            ("1".to_string(), ("{1}".to_string(), None)),
+            &vec!["2".to_string()],
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1527,11 +1687,8 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            "1 2".to_string(),
-            &vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            ("1".to_string(), ("{1}".to_string(), None)),
+            &vec!["2".to_string()],
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1559,10 +1716,11 @@ mod tests_process_user_def_line {
 
         let mut actual_cache_vec: Vec<String> = vec![];
 
+        // Not enough parameters
         assert!(process_user_def_line(
             &User::new(1000u32, "", 0),
-            "1 2".to_string(),
-            &HashMap::new(),
+            ("1".to_string(), ("{1} {2}".to_string(), None)),
+            &vec!["2".to_string()],
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1595,11 +1753,8 @@ mod tests_process_user_def_line {
 
         assert!(process_user_def_line(
             &User::new(1000u32, "", 0),
-            "1 2".to_string(),
-            &vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            ("1".to_string(), ("{1}".to_string(), None)),
+            &vec!["2".to_string()],
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1648,11 +1803,8 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            "1 2".to_string(),
-            &vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            ("1".to_string(), ("{1}".to_string(), None)),
+            &vec!["2".to_string()],
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1740,14 +1892,14 @@ mod tests_process_user_defs {
             .return_const(())
             .times(1);
 
+        let mut source_defs = HashMap::new();
+        source_defs.insert("1".to_string(), ("{1}".to_string(), None));
+
         assert!(process_user_defs(
             &User::new(1000u32, "", 0),
-            vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            &source_defs,
             cache_directory,
-            vec!["1 2".to_string(), "3 4".to_string()],
+            "1 2\n3 4",
             Some(response_str),
             60,
             0,
@@ -1805,14 +1957,14 @@ mod tests_process_user_defs {
             .return_const(())
             .times(1);
 
+        let mut source_defs = HashMap::new();
+        source_defs.insert("1".to_string(), ("{1}".to_string(), None));
+
         assert!(process_user_defs(
             &User::new(1000u32, "", 0),
-            vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            &source_defs,
             cache_directory,
-            vec!["1 2".to_string(), "# comment".to_string()],
+            "1 2\n# comment",
             None,
             1,
             1,
@@ -1840,14 +1992,14 @@ mod tests_process_user_defs {
             .return_once_st(move |_, _| Err(anyhow!("")))
             .times(1);
 
+        let mut source_defs = HashMap::new();
+        source_defs.insert("1".to_string(), ("{1}".to_string(), None));
+
         assert!(process_user_defs(
             &User::new(1000u32, "", 0),
-            vec![("1", "{1}")]
-                .into_iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
+            &source_defs,
             cache_directory,
-            vec!["1 2".to_string(), "# comment".to_string()],
+            "1 2\n# comment",
             None,
             60,
             1,
