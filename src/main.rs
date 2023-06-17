@@ -602,8 +602,7 @@ fn combine_opts(key_opts: Option<String>, user_opts: Option<String>, source_opts
 // If any other error occurs, return Err()
 fn process_user_def_line<T, U>(
     user: &User,
-    source: (String, (String, Option<String>)),
-    user_line_tokens: &[String],
+    parsed_line: ((String, (String, Option<String>)), Vec<String>, Option<String>),
     cache_directory: &Path,
     cached_output: &mut Vec<String>,
     cache_stale: u64,
@@ -615,8 +614,10 @@ where
     T: HttpClientTrait,
     U: FsTrait,
 {
+    let (source, user_line_tokens, user_opts) = parsed_line;
+
     let cache_path = get_cache_filename(
-        &source.0, user_line_tokens, cache_directory
+        &source.0, &user_line_tokens, cache_directory
     );
 
     info!("Looking for a cached response at {:?}", cache_path);
@@ -645,7 +646,7 @@ where
     let url =
         construct_url(
             &source.1.0,
-            user_line_tokens
+            &user_line_tokens
         ).context("Couldn't construct request URL")?;
 
     let response_str = http_client_trait
@@ -703,19 +704,12 @@ where
     let mut some_line_output = false;
 
     for (line_number, user_defs_line) in user_defs_string.lines().into_iter().enumerate() {
-        let parsed_line = parse_user_def_line(user_defs_line, source_defs_map)?;
-
-        if let Some((
-            source,
-            user_line_tokens,
-            user_opts
-        )) = parsed_line {
-            info!("Found source {} for user definition line {}", source.0, user_defs_line);
+        if let Some(parsed_line) = parse_user_def_line(user_defs_line, source_defs_map)? {
+            info!("Found source {} for user definition line {}", parsed_line.0.0, user_defs_line);
 
             match process_user_def_line(
                 user,
-                source,
-                &user_line_tokens,
+                parsed_line,
                 cache_directory,
                 &mut cached_output,
                 cache_stale,
@@ -1745,8 +1739,7 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            ("1".to_string(), ("{1}".to_string(), None)),
-            &vec!["2".to_string()],
+            (("1".to_string(), ("{1}".to_string(), None)), vec!["2".to_string()], None),
             cache_directory,
             &mut actual_cache_vec,
             60,
@@ -1828,8 +1821,7 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            ("1".to_string(), ("{1}".to_string(), None)),
-            &vec!["2".to_string()],
+            (("1".to_string(), ("{1}".to_string(), None)), vec!["2".to_string()], None),
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1890,8 +1882,7 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            ("1".to_string(), ("{1}".to_string(), None)),
-            &vec!["2".to_string()],
+            (("1".to_string(), ("{1}".to_string(), None)), vec!["2".to_string()], None),
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1922,8 +1913,7 @@ mod tests_process_user_def_line {
         // Not enough parameters
         assert!(process_user_def_line(
             &User::new(1000u32, "", 0),
-            ("1".to_string(), ("{1} {2}".to_string(), None)),
-            &vec!["2".to_string()],
+            (("1".to_string(), ("{1} {2}".to_string(), None)), vec!["2".to_string()], None),
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -1956,8 +1946,7 @@ mod tests_process_user_def_line {
 
         assert!(process_user_def_line(
             &User::new(1000u32, "", 0),
-            ("1".to_string(), ("{1}".to_string(), None)),
-            &vec!["2".to_string()],
+            (("1".to_string(), ("{1}".to_string(), None)), vec!["2".to_string()], None),
             cache_directory,
             &mut actual_cache_vec,
             1,
@@ -2006,8 +1995,7 @@ mod tests_process_user_def_line {
 
         let actual_string = process_user_def_line(
             &User::new(1000u32, "", 0),
-            ("1".to_string(), ("{1}".to_string(), None)),
-            &vec!["2".to_string()],
+            (("1".to_string(), ("{1}".to_string(), None)), vec!["2".to_string()], None),
             cache_directory,
             &mut actual_cache_vec,
             1,
