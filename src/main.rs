@@ -192,8 +192,9 @@ where
 lazy_static! {
     // Space-delimited tokens, except those within double quotes,
     // where double quotes inside double quotes may be escaped
-    // with a backslash
-    static ref REGEX_SPACE_DELIMITED: Regex = Regex::new(r#"([^ "]*"([^\\]|\\.)*?"[^ "]*)+|[^ "]+"#).unwrap();
+    // with a backslash, and any token beginning with @ is included
+    // as part of the next token
+    static ref REGEX_SPACE_DELIMITED: Regex = Regex::new(r#"(@[^ ]* +)?(([^ "]*"([^\\]|\\.)*?"[^ "]*)+|[^ "]+)"#).unwrap();
 }
 
 // Parses the source definitions &str into a HashMap of sources to a tuple
@@ -475,6 +476,122 @@ fn parse_user_def_line(
                 )
         )
         .ok_or_else(|| anyhow!("No source definition found for source {}", user_line_tokens.get(0).unwrap()))
+}
+
+fn combine_opts(key_opts: Option<String>, user_opts: Option<String>, source_opts: Option<String>) -> String {
+    // If user_key:
+    lazy_static! {
+        // Comma-delimited tokens, except those within double quotes
+        static ref REGEX_COMMA_DELIMITED: Regex = Regex::new(r#"([^,"]*"([^\\]|\\.)*?"[^,"]*)+|[^,"]+"#).unwrap();
+    }
+
+    lazy_static! {
+        static ref NONDUPLICABLE_OPTS: Vec<&'static str> = vec![
+            "command",
+            "principals",
+            "from"
+        ];
+    }
+
+    let mut key_opts_tokens = REGEX_COMMA_DELIMITED
+        .find_iter(&key_opts.unwrap_or("".to_string()))
+        .map(|m| m.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    let mut user_opts_tokens = REGEX_COMMA_DELIMITED
+        .find_iter(&user_opts.unwrap_or("".to_string()))
+        .map(|m| m.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    let mut source_opts_tokens = REGEX_COMMA_DELIMITED
+        .find_iter(&source_opts.unwrap_or("".to_string()))
+        .map(|m| m.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    let mut source_nonduplicable_opts = HashMap::new();
+
+    source_opts_tokens.retain(|source_opt| {
+        for &nonduplicable_opt in NONDUPLICABLE_OPTS.iter() {
+            if source_opt.starts_with(nonduplicable_opt) {
+                if let Some(existing_opt) = source_nonduplicable_opts.get(nonduplicable_opt) {
+                    warn!(
+                        "Source definition line specifies option {:?} more than once; keeping only the first specification {:?}, removing subsequent specification {:?}",
+                        nonduplicable_opt,
+                        existing_opt,
+                        source_opt
+                    );
+                    return false;
+                } else {
+                    source_nonduplicable_opts.insert(nonduplicable_opt, source_opt.clone());
+                }
+            }
+        }
+        return true;
+    });
+
+    let mut user_nonduplicable_opts = HashMap::new();
+
+    user_opts_tokens.retain(|user_opt| {
+        for &nonduplicable_opt in NONDUPLICABLE_OPTS.iter() {
+            if user_opt.starts_with(nonduplicable_opt) {
+                if let Some(existing_opt) = source_nonduplicable_opts.get(nonduplicable_opt) {
+                    warn!(
+                        "Source definition line already specifies option {:?} as {:?}; removing {:?} that was specified in user definition line",
+                        nonduplicable_opt,
+                        existing_opt,
+                        user_opt
+                    );
+                    return false;
+                } else if let Some(existing_opt) = user_nonduplicable_opts.get(nonduplicable_opt) {
+                    warn!(
+                        "User definition line specifies option {:?} more than once; keeping only the first specification {:?}, removing subsequent specification {:?}",
+                        nonduplicable_opt,
+                        existing_opt,
+                        user_opt
+                    );
+                    return false;
+                } else {
+                    user_nonduplicable_opts.insert(nonduplicable_opt, user_opt.clone());
+                }
+            }
+        }
+        return true;
+    });
+
+    let mut key_nonduplicable_opts = HashMap::new();
+
+    key_opts_tokens.retain(|key_opt| {
+        for &nonduplicable_opt in NONDUPLICABLE_OPTS.iter() {
+            if key_opt.starts_with(nonduplicable_opt) {
+                if let Some(existing_opt) = source_nonduplicable_opts.get(nonduplicable_opt) {
+                    warn!(
+                        "Source definition line already specifies option {:?} as {:?}; removing {:?} that was specified in fetched key",
+                        nonduplicable_opt,
+                        existing_opt,
+                        key_opt
+                    );
+                    return false;
+                } else if let Some(existing_opt) = user_nonduplicable_opts.get(nonduplicable_opt) {
+                    warn!(
+                        "User definition line already specifies option {:?} as {:?}; removing {:?} that was specified in fetched key",
+                        nonduplicable_opt,
+                        existing_opt,
+                        key_opt
+                    );
+                    return false;
+                } else {
+                    key_nonduplicable_opts.insert(nonduplicable_opt, key_opt.clone());
+                }
+            }
+        }
+        return true;
+    });
+
+    let mut opts_tokens = [key_opts_tokens, user_opts_tokens, source_opts_tokens]
+        .concat();
+
+    opts_tokens.retain(|o| !o.is_empty());
+    opts_tokens.join(",")
 }
 
 // Processes a line of the user's key definitions file
@@ -1495,6 +1612,92 @@ mod tests_parse_user_def_line {
             vec![("1", ("{1}", Some("source-option")))],
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_combine_opts {
+    use super::*;
+
+    fn prepare_combine_opts_test(
+        key_opts: Option<&str>,
+        user_opts: Option<&str>,
+        source_opts: Option<&str>,
+        expected: &str
+    ) {
+        assert_eq!(
+            combine_opts(
+                key_opts.map(|a| a.to_string()),
+                user_opts.map(|b| b.to_string()),
+                source_opts.map(|c| c.to_string())
+            ),
+            expected.to_string()
+        );
+    }
+
+    #[test_log::test]
+    fn test_no_opts() {
+        prepare_combine_opts_test(None, None, None, "");
+    }
+
+    #[test_log::test]
+    fn test_source_opts_only() {
+        prepare_combine_opts_test(None, None, Some("a"), "a");
+    }
+
+    #[test_log::test]
+    fn test_user_opts_only() {
+        prepare_combine_opts_test(None, Some("a"), None, "a");
+    }
+
+    #[test_log::test]
+    fn test_key_opts_only() {
+        prepare_combine_opts_test(Some("a"), None, None, "a");
+    }
+
+    #[test_log::test]
+    fn test_source_user_opts_no_conflict() {
+        prepare_combine_opts_test(None, Some("a"), Some("a"), "a,a");
+    }
+
+    #[test_log::test]
+    fn test_user_key_opts_no_conflict() {
+        prepare_combine_opts_test(Some("a"), Some("a"), None, "a,a");
+    }
+
+    #[test_log::test]
+    fn test_source_key_opts_no_conflict() {
+        prepare_combine_opts_test(Some("a"), None, Some("a"), "a,a");
+    }
+
+    #[test_log::test]
+    fn test_source_user_key_opts_no_conflict() {
+        prepare_combine_opts_test(Some("a"), Some("a"), Some("a"), "a,a,a");
+    }
+
+    #[test_log::test]
+    fn test_opts_no_conflict() {
+        prepare_combine_opts_test(Some("from=\"1\""), Some("command=\"2\""), Some("principals=\"3\""), "from=\"1\",command=\"2\",principals=\"3\"");
+    }
+
+    #[test_log::test]
+    fn test_source_user_opts_conflict() {
+        prepare_combine_opts_test(None, Some("command=\"1\""), Some("command=\"2\""), "command=\"2\"");
+    }
+
+    #[test_log::test]
+    fn test_user_key_opts_conflict() {
+        prepare_combine_opts_test(Some("command=\"1\""), Some("command=\"2\""), None, "command=\"2\"");
+    }
+
+    #[test_log::test]
+    fn test_source_key_opts_conflict() {
+        prepare_combine_opts_test(Some("command=\"1\""), None, Some("command=\"2\""), "command=\"2\"");
+    }
+
+    #[test_log::test]
+    fn test_source_user_key_opts_conflict() {
+        prepare_combine_opts_test(Some("command=\"1\""), Some("command=\"2\""), Some("command=\"3\""), "command=\"3\"");
     }
 }
 
