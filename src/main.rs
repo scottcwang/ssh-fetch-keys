@@ -478,6 +478,49 @@ fn parse_user_def_line(
         .ok_or_else(|| anyhow!("No source definition found for source {}", user_line_tokens.get(0).unwrap()))
 }
 
+fn parse_key_line(key_line: &str) -> (Option<String>, String) {
+    let key_line_tokens: Vec<regex::Match> = REGEX_SPACE_DELIMITED.find_iter(key_line)
+        .collect();
+
+    lazy_static! {
+        static ref KNOWN_KEY_TYPES: Vec<&'static str> = vec![
+            "ssh-dss",
+            "ssh-dss-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
+            "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp521",
+            "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+            "ssh-ed25519",
+            "ssh-ed25519-cert-v01@openssh.com",
+            "sk-ssh-ed25519@openssh.com",
+            "sk-ssh-ed25519-cert-v01@openssh.com",
+            "ssh-rsa",
+            "ssh-rsa-cert-v01@openssh.com",
+            "ssh-xmss@openssh.com",
+            "ssh-xmss-cert-v01@openssh.com"
+        ];
+    }
+
+    // Line is empty or has one token,
+    // or begins with #,
+    // or the second token does not correspond to a known key type
+    if key_line_tokens.len() < 2
+            || key_line_tokens.get(0).unwrap().as_str().chars().next().unwrap_or('#') == '#'
+            || !KNOWN_KEY_TYPES.contains(&key_line_tokens.get(1).unwrap().as_str()) {
+        (None, key_line.to_string())
+    } else {
+        let first_token = key_line_tokens.get(0).unwrap();
+        (
+            Some(first_token.as_str().to_string()),
+            key_line[first_token.end()..].trim_start().to_string()
+        )
+    }
+}
+
 fn combine_opts(key_opts: Option<String>, user_opts: Option<String>, source_opts: Option<String>) -> String {
     // If user_key:
     lazy_static! {
@@ -1606,6 +1649,61 @@ mod tests_parse_user_def_line {
             vec![("1", ("{1}", Some("source-option")))],
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_parse_key_line_test {
+    use super::*;
+
+    fn prepare_key_line_test(
+        key_line: &str,
+        expected: (Option<&str>, &str)
+    ) {
+        assert_eq!(
+            parse_key_line(key_line),
+            (expected.0.map(str::to_string), expected.1.to_string())
+        );
+    }
+
+    #[test_log::test]
+    fn test_empty_string() {
+        prepare_key_line_test("", (None, ""));
+    }
+
+    #[test_log::test]
+    fn test_comment_string_1() {
+        prepare_key_line_test("# comment", (None, "# comment"));
+    }
+
+    #[test_log::test]
+    fn test_comment_string_2() {
+        prepare_key_line_test(" # comment", (None, " # comment"));
+    }
+
+    #[test_log::test]
+    fn test_comment_string_3() {
+        prepare_key_line_test("#comment", (None, "#comment"));
+    }
+
+    #[test_log::test]
+    fn test_one_token() {
+        prepare_key_line_test("a", (None, "a"));
+    }
+
+    #[test_log::test]
+    fn test_two_tokens_unknown_key_type() {
+        prepare_key_line_test("a b", (None, "a b"));
+    }
+
+    #[test_log::test]
+    fn test_two_tokens_known_key_type() {
+        prepare_key_line_test("a ssh-rsa", (Some("a"), "ssh-rsa"));
+    }
+
+    #[test_log::test]
+    fn test_three_tokens_known_key_type() {
+        prepare_key_line_test("a ssh-rsa b", (Some("a"), "ssh-rsa b"));
     }
 }
 
