@@ -521,20 +521,101 @@ fn parse_key_line(key_line: &str) -> (Option<String>, String) {
     }
 }
 
-fn combine_opts(key_opts: Option<String>, user_opts: Option<String>, source_opts: Option<String>) -> String {
-    // If user_key:
+fn split_at_first_marker(opts_option: Option<String>) -> (Option<String>, Option<String>) {
+    lazy_static! {
+        // A marker that starts with @ and ends at a space
+        static ref REGEX_ATSIGN_SPACE_DELIMITED: Regex = Regex::new(r#"@[^ ]*"#).unwrap();
+    }
+
+    opts_option.as_ref().and_then(|opts|
+        REGEX_ATSIGN_SPACE_DELIMITED.find(&opts)
+        .map(|m| m.end())
+        .and_then(|marker_end_index| {
+            let (marker, opts_rest) = opts.split_at(marker_end_index);
+            Some((
+                {
+                    if marker.is_empty() {
+                        None
+                    } else {
+                        Some(marker.to_string())
+                    }
+                },
+                {
+                    let opts_rest_trimmed = opts_rest.trim_start();
+                    if opts_rest_trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(opts_rest_trimmed.to_string())
+                    }
+                }
+            ))
+        })
+    ).unwrap_or_else(
+        || (None, opts_option)
+    )
+}
+
+fn combine_and_strip_markers(
+    key_opts_option: Option<String>,
+    user_opts_option: Option<String>,
+    source_opts_option: Option<String>
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>
+) {
+    let (key_marker, key_opts) = split_at_first_marker(key_opts_option);
+    let (user_marker, user_opts) = split_at_first_marker(user_opts_option);
+    let (source_marker, source_opts) = split_at_first_marker(source_opts_option);
+
+    (
+        {
+            if [&key_marker, &user_marker, &source_marker].iter().any(
+                |marker| marker.as_ref().map_or_else(
+                    || false,
+                    |marker_string| marker_string == "@revoked"
+                )
+            ) {
+                Some("@revoked".to_string())
+            } else if [&key_marker, &user_marker, &source_marker].iter().any(
+                |marker| marker.as_ref().map_or_else(
+                    || false,
+                    |marker_string| marker_string == "@cert-authority"
+                )
+            ) {
+                Some("@cert-authority".to_string())
+            } else {
+                None
+            }
+        },
+        key_opts,
+        user_opts,
+        source_opts
+    )
+}
+
+fn combine_opts(
+    key_marker_opts: Option<String>,
+    user_marker_opts: Option<String>,
+    source_marker_opts: Option<String>
+) -> String {
     lazy_static! {
         // Comma-delimited tokens, except those within double quotes
         static ref REGEX_COMMA_DELIMITED: Regex = Regex::new(r#"([^,"]*"([^\\]|\\.)*?"[^,"]*)+|[^,"]+"#).unwrap();
-    }
-
-    lazy_static! {
         static ref NONDUPLICABLE_OPTS: Vec<&'static str> = vec![
             "command",
             "principals",
             "from"
         ];
     }
+
+    let (
+        marker_option,
+        key_opts,
+        user_opts,
+        source_opts
+    ) = combine_and_strip_markers(key_marker_opts, user_marker_opts, source_marker_opts);
 
     let mut key_opts_tokens = REGEX_COMMA_DELIMITED
         .find_iter(&key_opts.unwrap_or("".to_string()))
@@ -634,7 +715,13 @@ fn combine_opts(key_opts: Option<String>, user_opts: Option<String>, source_opts
         .concat();
 
     opts_tokens.retain(|o| !o.is_empty());
-    opts_tokens.join(",")
+    let combined_opts = opts_tokens.join(",");
+
+    if let Some(marker) = marker_option {
+        [marker, combined_opts].join(" ")
+    } else {
+        combined_opts
+    }
 }
 
 // Processes a line of the user's key definitions file
@@ -1731,6 +1818,147 @@ mod tests_parse_key_line_test {
 }
 
 #[cfg(test)]
+mod tests_split_at_first_marker {
+    use super::*;
+
+    fn prepare_split_at_first_marker_test(
+        opts_option: Option<&str>,
+        expected: (Option<&str>, Option<&str>)
+    ) {
+        assert_eq!(
+            split_at_first_marker(
+                opts_option.map(|opts| opts.to_string())
+            ),
+            (
+                expected.0.map(|marker| marker.to_string()),
+                expected.1.map(|opts| opts.to_string())
+            )
+        );
+    }
+
+    #[test_log::test]
+    fn test_none() {
+        prepare_split_at_first_marker_test(None, (None, None));
+    }
+
+    #[test_log::test]
+    fn test_no_marker_no_opts() {
+        prepare_split_at_first_marker_test(None, (None, None));
+    }
+
+    #[test_log::test]
+    fn test_no_marker_with_opts() {
+        prepare_split_at_first_marker_test(Some("x y z"), (None, Some("x y z")));
+    }
+
+    #[test_log::test]
+    fn test_one_marker_no_opts() {
+        prepare_split_at_first_marker_test(Some("@x"), (Some("@x"), None));
+    }
+
+    #[test_log::test]
+    fn test_one_marker_with_opts() {
+        prepare_split_at_first_marker_test(Some("@x y z"), (Some("@x"), Some("y z")));
+    }
+
+    #[test_log::test]
+    fn test_two_markers_with_opts() {
+        prepare_split_at_first_marker_test(Some("@x @y z"), (Some("@x"), Some("@y z")));
+    }
+}
+
+#[cfg(test)]
+mod tests_combine_and_strip_markers {
+    use super::*;
+
+    fn prepare_combine_and_strip_markers_test(
+        key_opts_option: Option<&str>,
+        user_opts_option: Option<&str>,
+        source_opts_option: Option<&str>,
+        expected: (
+            Option<&str>,
+            Option<&str>,
+            Option<&str>,
+            Option<&str>
+        )
+    ) {
+        assert_eq!(
+            combine_and_strip_markers(
+                key_opts_option.map(|opts| opts.to_string()),
+                user_opts_option.map(|opts| opts.to_string()),
+                source_opts_option.map(|opts| opts.to_string())
+            ),
+            (
+                expected.0.map(|marker| marker.to_string()),
+                expected.1.map(|opts| opts.to_string()),
+                expected.2.map(|opts| opts.to_string()),
+                expected.3.map(|opts| opts.to_string())
+            )
+        );
+    }
+
+    #[test_log::test]
+    fn test_none_none_none() {
+        prepare_combine_and_strip_markers_test(
+            None,
+            None,
+            None,
+            (None, None, None, None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_revoked_none_none() {
+        prepare_combine_and_strip_markers_test(
+            Some("@revoked"),
+            None,
+            None,
+            (Some("@revoked"), None, None, None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_none_ca_none() {
+        prepare_combine_and_strip_markers_test(
+            None,
+            Some("@cert-authority"),
+            None,
+            (Some("@cert-authority"), None, None, None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_revoked_ca_none() {
+        prepare_combine_and_strip_markers_test(
+            Some("@revoked"),
+            Some("@cert-authority"),
+            None,
+            (Some("@revoked"), None, None, None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_revoked_ca_opt_none() {
+        prepare_combine_and_strip_markers_test(
+            Some("@revoked"),
+            Some("@cert-authority x"),
+            None,
+            (Some("@revoked"), None, Some("x"), None)
+        );
+    }
+
+    #[test_log::test]
+    fn test_opt_ca_opt_revoked_opt() {
+        prepare_combine_and_strip_markers_test(
+            Some("x"),
+            Some("@cert-authority y"),
+            Some("@revoked z"),
+            (Some("@revoked"), Some("x"), Some("y"), Some("z"))
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests_combine_opts {
     use super::*;
 
@@ -1813,6 +2041,16 @@ mod tests_combine_opts {
     #[test_log::test]
     fn test_source_user_key_opts_conflict() {
         prepare_combine_opts_test(Some("command=\"1\""), Some("command=\"2\""), Some("command=\"3\""), "command=\"3\"");
+    }
+
+    #[test_log::test]
+    fn test_one_marker() {
+        prepare_combine_opts_test(Some("@revoked x"), Some("y"), Some("z"), "@revoked x,y,z");
+    }
+
+    #[test_log::test]
+    fn test_two_markers() {
+        prepare_combine_opts_test(Some("@revoked x"), Some("@cert-authority y"), Some("z"), "@revoked x,y,z");
     }
 }
 
