@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::str;
 use std::time;
-use users::os::unix::UserExt;
-use users::switch;
-use users::{User, Users, UsersCache};
+use uzers::os::unix::UserExt;
+use uzers::switch;
+use uzers::{User, Users, UsersCache};
 
 #[cfg(test)]
 use mockall::automock;
@@ -36,8 +36,8 @@ impl SwitchUserGuardTrait for switch::SwitchUserGuard {
 trait SwitchUserTrait {
     fn switch_user_group(
         &self,
-        uid: users::uid_t,
-        gid: users::gid_t,
+        uid: uzers::uid_t,
+        gid: uzers::gid_t,
     ) -> Result<Box<dyn SwitchUserGuardTrait>, io::Error>;
 }
 
@@ -46,8 +46,8 @@ struct SwitchUser;
 impl SwitchUserTrait for SwitchUser {
     fn switch_user_group(
         &self,
-        uid: users::uid_t,
-        gid: users::gid_t,
+        uid: uzers::uid_t,
+        gid: uzers::gid_t,
     ) -> Result<Box<dyn SwitchUserGuardTrait>, io::Error> {
         switch::switch_user_group(uid, gid)
             .map(|switch_user_guard| Box::new(switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
@@ -1066,7 +1066,7 @@ fn main() {
 #[cfg(test)]
 mod tests_switch_user {
     use super::*;
-    use users::mock::MockUsers;
+    use uzers::mock::MockUsers;
 
     fn prepare_switch_user_test(
         user_name_option: Option<&str>,
@@ -2774,8 +2774,8 @@ mod tests_fetch_print_keys {
     use super::*;
     use anyhow::anyhow;
     use mockall::predicate;
-    use users::mock::MockUsers;
-    use users::User;
+    use uzers::mock::MockUsers;
+    use uzers::User;
 
     #[test_log::test]
     fn cannot_switch_user() {
