@@ -23,46 +23,47 @@ use mockall::automock;
 
 #[cfg_attr(test, automock)]
 trait SwitchUserGuardTrait {
-    fn drop_trait(&self);
+    fn drop_trait(self);
 }
 
-impl SwitchUserGuardTrait for switch::SwitchUserGuard {
-    fn drop_trait(&self) {
-        drop(self);
+impl SwitchUserGuardTrait for Box<switch::SwitchUserGuard> {
+    fn drop_trait(self) {
+        drop(*self);
     }
 }
 
 #[cfg_attr(test, automock)]
-trait SwitchUserTrait {
+trait SwitchUserTrait<T> where T: SwitchUserGuardTrait {
     fn switch_user_group(
         &self,
         uid: uzers::uid_t,
         gid: uzers::gid_t,
-    ) -> Result<Box<dyn SwitchUserGuardTrait>, io::Error>;
+    ) -> Result<T, io::Error>;
 }
 
 struct SwitchUser;
 
-impl SwitchUserTrait for SwitchUser {
+impl SwitchUserTrait<Box<switch::SwitchUserGuard>> for SwitchUser {
     fn switch_user_group(
         &self,
         uid: uzers::uid_t,
         gid: uzers::gid_t,
-    ) -> Result<Box<dyn SwitchUserGuardTrait>, io::Error> {
+    ) -> Result<Box<switch::SwitchUserGuard>, io::Error> {
         switch::switch_user_group(uid, gid)
-            .map(|switch_user_guard| Box::new(switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
+            .map(|switch_user_guard| Box::new(switch_user_guard))
     }
 }
 
 // Switches the effective uid to the given user
-fn switch_user<T, U>(
+fn switch_user<T, U, V>(
     user_name_option: Option<&str>,
     user_table: &T,
     switch_user_trait: &U,
-) -> Result<(User, Option<Box<dyn SwitchUserGuardTrait>>)>
+) -> Result<(User, Option<V>)>
 where
     T: Users,
-    U: SwitchUserTrait,
+    U: SwitchUserTrait<V>,
+    V: SwitchUserGuardTrait
 {
     match user_name_option {
         Some(user_name) => {
@@ -955,20 +956,21 @@ struct Args {
     verbose: clap_verbosity_flag::Verbosity,
 }
 
-fn fetch_print_keys<T, U, V, W, X>(
+fn fetch_print_keys<T, U, V, W, X, Y>(
     args: Args,
     users_table: &T,
     switch_user_trait: &U,
-    http_client_trait: &V,
-    fs_trait: &W,
-    print_trait: &X,
+    http_client_trait: &W,
+    fs_trait: &X,
+    print_trait: &Y,
 ) -> Result<()>
 where
     T: Users,
-    U: SwitchUserTrait,
-    V: HttpClientTrait,
-    W: FsTrait,
-    X: PrintTrait,
+    U: SwitchUserTrait<V>,
+    V: SwitchUserGuardTrait,
+    W: HttpClientTrait,
+    X: FsTrait,
+    Y: PrintTrait,
 {
     let (user, guard) = switch_user(args.username.as_deref(), users_table, switch_user_trait)?;
 
@@ -1031,7 +1033,7 @@ where
 
     // Switch user back
     if let Some(b) = guard {
-        (*b).drop_trait();
+        b.drop_trait();
     }
 
     Ok(())
@@ -1071,10 +1073,11 @@ mod tests_switch_user {
     fn prepare_switch_user_test(
         user_name_option: Option<&str>,
         expect_switch_user_call: bool,
-    ) -> Result<(User, Option<Box<dyn SwitchUserGuardTrait>>)> {
-        let mut mock_switch_user: MockSwitchUserTrait = MockSwitchUserTrait::new();
-        let expected_switch_user_guard: Box<dyn SwitchUserGuardTrait> =
-            Box::new(MockSwitchUserGuardTrait::new()) as Box<dyn SwitchUserGuardTrait>;
+    ) -> Result<(User, Option<MockSwitchUserGuardTrait>)> {
+        let mut mock_switch_user: MockSwitchUserTrait<MockSwitchUserGuardTrait> =
+            MockSwitchUserTrait::new();
+        let expected_switch_user_guard: MockSwitchUserGuardTrait =
+            MockSwitchUserGuardTrait::new();
 
         let expected_user_uid = 1000;
         let expected_user_gid = 1000;
@@ -2789,7 +2792,7 @@ mod tests_fetch_print_keys {
         assert!(fetch_print_keys(
             matches,
             &user_table,
-            &MockSwitchUserTrait::new(),
+            &MockSwitchUserTrait::<MockSwitchUserGuardTrait>::new(),
             &MockHttpClientTrait::new(),
             &MockFsTrait::new(),
             &MockPrintTrait::new(),
@@ -2910,7 +2913,7 @@ mod tests_fetch_print_keys {
         assert!(fetch_print_keys(
             matches,
             &user_table,
-            &MockSwitchUserTrait::new(),
+            &MockSwitchUserTrait::<MockSwitchUserGuardTrait>::new(),
             &mock_http_client,
             &mock_fs,
             &mock_print,
@@ -2939,13 +2942,11 @@ mod tests_fetch_print_keys {
 
         let root_user = User::new(0, "root", 0);
 
-        let mut mock_switch_user = MockSwitchUserTrait::new();
+        let mut mock_switch_user = MockSwitchUserTrait::<MockSwitchUserGuardTrait>::new();
         mock_switch_user
             .expect_switch_user_group()
             .withf(move |uid, gid| *uid == expected_user_uid && *gid == expected_user_gid)
-            .return_once_st(|_, _| {
-                Ok(Box::new(mock_switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
-            })
+            .return_once_st(|_, _| Ok(mock_switch_user_guard))
             .times(1);
 
         let mut user_table = MockUsers::with_current_uid(root_user.uid());
@@ -3058,13 +3059,11 @@ mod tests_fetch_print_keys {
 
         let root_user = User::new(0, "root", 0);
 
-        let mut mock_switch_user = MockSwitchUserTrait::new();
+        let mut mock_switch_user = MockSwitchUserTrait::<MockSwitchUserGuardTrait>::new();
         mock_switch_user
             .expect_switch_user_group()
             .withf(move |uid, gid| *uid == expected_user_uid && *gid == expected_user_gid)
-            .return_once_st(|_, _| {
-                Ok(Box::new(mock_switch_user_guard) as Box<dyn SwitchUserGuardTrait>)
-            })
+            .return_once_st(|_, _| Ok(mock_switch_user_guard))
             .times(1);
 
         let mut user_table = MockUsers::with_current_uid(root_user.uid());
